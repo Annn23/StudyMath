@@ -1,0 +1,59 @@
+# Dependencies
+node_modules/
+*/node_modules/
+
+# Production builds
+.next/
+*/.next/
+out/
+*/out/
+build/
+*/build/
+dist/
+*/dist/
+web-build/
+*/web-build/
+
+# Expo & Mobile
+.expo/
+*/.expo/
+expo-env.d.ts
+*/expo-env.d.ts
+.kotlin/
+*/.kotlin/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+.metro-health-check*
+/mobile/ios/
+/mobile/android/
+
+# Environment files (NEVER commit secrets!)
+.env
+.env.*
+.env*.local
+*.env
+*.env.*
+!.env.example
+!*/.env.example
+
+# Logs & debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# OS Files
+.DS_Store
+Thumbs.db
+*.pem
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Vercel
+.vercel/
+*/.vercel/
