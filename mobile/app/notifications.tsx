@@ -74,7 +74,10 @@ export default function NotificationsScreen() {
       router.push(`/user/${notif.data.matched_user_id}`);
     } else if (notif.type === 'message' && notif.data?.conversation_id) {
       router.push(`/chat-detail/${notif.data.conversation_id}`);
-    } else if (notif.type === 'session_invite' && notif.data?.session_id) {
+    } else if (
+      (notif.type === 'session_invite' || notif.type === 'session_confirmed') &&
+      notif.data?.session_id
+    ) {
       router.push(`/session/${notif.data.session_id}`);
     }
   };

@@ -39,9 +39,9 @@ export default async function UsersPage() {
           outline: 'none', fontSize: 14, fontFamily: 'Outfit, sans-serif',
           background: '#f8f4ff', color: '#6b7280', cursor: 'pointer',
         }}>
-          <option value="">Semua Jenjang</option>
-          {['SD', 'SMP', 'SMA', 'Kuliah', 'Umum'].map(g => (
-            <option key={g} value={g}>{g}</option>
+          <option value="">Semua Universitas</option>
+          {['UI', 'ITB', 'UGM', 'ITS', 'UNAIR', 'UNDIP', 'UB', 'UNPAD', 'Telkom', 'Binus'].map(u => (
+            <option key={u} value={u}>{u}</option>
           ))}
         </select>
         <select style={{
@@ -63,7 +63,7 @@ export default async function UsersPage() {
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ background: 'rgba(205,79,117,0.05)' }}>
-              {['Pengguna', 'Username', 'Jenjang', 'Mapel', 'Sesi', 'Rating', 'Status', 'Bergabung', 'Aksi'].map(h => (
+              {['Pengguna', 'Username', 'Universitas', 'Mata Kuliah', 'Sesi', 'Rating', 'Status', 'Bergabung', 'Aksi'].map(h => (
                 <th key={h} style={{
                   textAlign: 'left', padding: '14px 16px', fontSize: 11,
                   color: '#9ca3af', fontWeight: 700, textTransform: 'uppercase',
@@ -96,11 +96,11 @@ export default async function UsersPage() {
                   @{user.username || '—'}
                 </td>
                 <td style={{ padding: '14px 16px' }}>
-                  {user.grade_level && (
+                  {(user.university || user.grade_level) && (
                     <span style={{
                       background: 'rgba(205,79,117,0.1)', color: '#cd4f75', fontSize: 12,
                       padding: '3px 10px', borderRadius: 999, fontWeight: 600,
-                    }}>{user.grade_level}</span>
+                    }}>{user.university || 'Univ'}</span>
                   )}
                 </td>
                 <td style={{ padding: '14px 16px', fontSize: 12, color: '#6b7280', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

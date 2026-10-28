@@ -23,7 +23,21 @@ import {
   actionOnProfile,
   getOrCreateConversation,
 } from '../lib/api';
-import { Profile, SUBJECTS, GRADE_LEVELS } from '../types';
+import { Profile, SUBJECTS } from '../types';
+
+const POPULAR_UNIV_CHIPS = [
+  'Semua Univ',
+  'UI',
+  'ITB',
+  'UGM',
+  'ITS',
+  'UNAIR',
+  'UNDIP',
+  'UB',
+  'UNPAD',
+  'Telkom',
+  'Binus',
+];
 
 const POPULAR_CITIES = [
   'Semua',
@@ -52,7 +66,7 @@ export default function NearbyScreen() {
   // Filters & Search
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCity, setSelectedCity] = useState('Semua');
-  const [selectedGrade, setSelectedGrade] = useState('Semua');
+  const [selectedUniv, setSelectedUniv] = useState('Semua Univ');
   const [selectedSubject, setSelectedSubject] = useState('Semua');
 
   // Data
@@ -84,7 +98,7 @@ export default function NearbyScreen() {
         currentUserId: myUserId,
         searchQuery: searchQuery.trim() || undefined,
         location: selectedCity !== 'Semua' ? selectedCity : undefined,
-        gradeLevel: selectedGrade !== 'Semua' ? selectedGrade : undefined,
+        university: selectedUniv !== 'Semua Univ' ? selectedUniv : undefined,
         subject: selectedSubject !== 'Semua' ? selectedSubject : undefined,
       });
       setProfiles(results);
@@ -93,7 +107,7 @@ export default function NearbyScreen() {
     } finally {
       setLoading(false);
     }
-  }, [myUserId, searchQuery, selectedCity, selectedGrade, selectedSubject]);
+  }, [myUserId, searchQuery, selectedCity, selectedUniv, selectedSubject]);
 
   useEffect(() => {
     if (myUserId) {
@@ -115,12 +129,16 @@ export default function NearbyScreen() {
         setGreetedUserIds(prev => new Set(prev).add(partner.id));
         if (data?.is_matched) {
           Alert.alert(
-            'Partner Terhubung! 🎉',
-            `Kamu dan ${partner.full_name || 'teman belajarmu'} saling terhubung untuk belajar! Mau langsung mengobrol?`,
+            'Partner Belajar Terhubung! 🎉',
+            `Kamu dan ${partner.full_name || 'teman belajarmu'} sekarang sudah terhubung! Mau langsung jadwalkan sesi belajar atau chat?`,
             [
               { text: 'Nanti', style: 'cancel' },
               {
-                text: 'Chat Sekarang 💬',
+                text: 'Jadwalkan Sesi 📅',
+                onPress: () => router.push(`/new-session?partner=${partner.id}`),
+              },
+              {
+                text: 'Chat 💬',
                 onPress: () => handleDirectChat(partner),
               },
             ]
@@ -156,14 +174,14 @@ export default function NearbyScreen() {
   const handleResetFilters = () => {
     setSearchQuery('');
     setSelectedCity('Semua');
-    setSelectedGrade('Semua');
+    setSelectedUniv('Semua Univ');
     setSelectedSubject('Semua');
   };
 
   const hasActiveFilters =
     searchQuery.trim() !== '' ||
     selectedCity !== 'Semua' ||
-    selectedGrade !== 'Semua' ||
+    selectedUniv !== 'Semua Univ' ||
     selectedSubject !== 'Semua';
 
   return (
@@ -285,7 +303,7 @@ export default function NearbyScreen() {
           })}
         </ScrollView>
 
-        {/* Filter Jenjang & Mapel */}
+        {/* Filter Univ & Matkul */}
         <View style={styles.secondaryFilterDivider} />
         <ScrollView
           horizontal
@@ -293,18 +311,18 @@ export default function NearbyScreen() {
           contentContainerStyle={styles.tagScrollContent}
           style={styles.tagScrollView}
         >
-          {/* Jenjang */}
-          {['Semua', ...GRADE_LEVELS].map(grade => {
-            const isSelected = selectedGrade === grade;
+          {/* Universitas */}
+          {POPULAR_UNIV_CHIPS.map(univ => {
+            const isSelected = selectedUniv === univ;
             return (
               <TouchableOpacity
-                key={`grade-${grade}`}
+                key={`univ-${univ}`}
                 style={[styles.tagChip, isSelected && styles.tagChipActive]}
-                onPress={() => setSelectedGrade(grade)}
+                onPress={() => setSelectedUniv(univ)}
                 activeOpacity={0.7}
               >
                 <Text style={[styles.tagChipText, isSelected && styles.tagChipTextActive]}>
-                  {grade === 'Semua' ? '🎓 Semua Jenjang' : `🎓 ${grade}`}
+                  {univ === 'Semua Univ' ? '🏛️ Semua Univ' : `🏛️ ${univ}`}
                 </Text>
               </TouchableOpacity>
             );
@@ -312,7 +330,7 @@ export default function NearbyScreen() {
 
           <View style={styles.chipDivider} />
 
-          {/* Mata Pelajaran */}
+          {/* Mata Kuliah */}
           {['Semua', ...SUBJECTS.slice(0, 10)].map(subj => {
             const isSelected = selectedSubject === subj;
             return (
@@ -323,7 +341,7 @@ export default function NearbyScreen() {
                 activeOpacity={0.7}
               >
                 <Text style={[styles.tagChipText, isSelected && styles.tagChipTextActive]}>
-                  {subj === 'Semua' ? '📚 Semua Mapel' : subj}
+                  {subj === 'Semua' ? '📚 Semua Matkul' : subj}
                 </Text>
               </TouchableOpacity>
             );
@@ -367,7 +385,7 @@ export default function NearbyScreen() {
               </Text>
               <Text style={styles.emptyTip}>
                 💡 <Text style={styles.emptyTipBold}>Tips:</Text> Teman kamu mungkin belum mengatur nama kotanya
-                atau jenjangnya di profil. Coba ketik namanya langsung di kolom pencarian di atas atau klik tombol di bawah.
+                atau universitasnya di profil. Coba ketik namanya langsung di kolom pencarian di atas atau klik tombol di bawah.
               </Text>
               {hasActiveFilters && (
                 <TouchableOpacity style={styles.resetBtnPrimary} onPress={handleResetFilters}>
@@ -435,11 +453,6 @@ export default function NearbyScreen() {
                           📍 {item.location || 'Lokasi belum diatur'}
                         </Text>
                       </View>
-                      {item.grade_level && (
-                        <View style={styles.gradeBadge}>
-                          <Text style={styles.gradeBadgeText}>🎓 {item.grade_level}</Text>
-                        </View>
-                      )}
                       {item.study_style && (
                         <View style={styles.styleBadge}>
                           <Text style={styles.styleBadgeText}>
@@ -779,7 +792,7 @@ const styles = StyleSheet.create({
     color: '#ffffff',
   },
 
-  // Secondary Filter (Jenjang & Mapel)
+  // Secondary Filter (Univ & Matkul)
   secondaryFilterDivider: {
     height: 1,
     backgroundColor: 'rgba(0,0,0,0.06)',

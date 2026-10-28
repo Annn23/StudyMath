@@ -11,7 +11,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { addDays, format, isSameDay, startOfDay } from 'date-fns';
 import { id } from 'date-fns/locale';
 import { Colors, Fonts, BorderRadius, Spacing, Shadow } from '../constants/theme';
-import { getCurrentUser, getMatches, createStudySession } from '../lib/api';
+import { getCurrentUser, getMatches, getProfile, createStudySession } from '../lib/api';
 import { Profile, SUBJECTS } from '../types';
 
 const DURATIONS = [30, 45, 60, 90, 120];
@@ -30,11 +30,16 @@ export default function NewSessionScreen() {
   const { partner: partnerParam } = useLocalSearchParams<{ partner?: string }>();
 
   const [userId, setUserId] = useState<string | null>(null);
+  const [currentUserProfile, setCurrentUserProfile] = useState<Profile | null>(null);
   const [partners, setPartners] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  const [partnerId, setPartnerId] = useState<string | null>(partnerParam || null);
+  // Multi-partner selection
+  const [selectedPartnerIds, setSelectedPartnerIds] = useState<string[]>(
+    partnerParam ? [partnerParam] : []
+  );
+
   const [title, setTitle] = useState('');
   const [subject, setSubject] = useState<string | null>(null);
   const [description, setDescription] = useState('');
@@ -50,20 +55,57 @@ export default function NewSessionScreen() {
       const user = await getCurrentUser();
       if (!user) { router.replace('/welcome'); return; }
       setUserId(user.id);
+      const prof = await getProfile(user.id);
+      if (prof) setCurrentUserProfile(prof);
+
       const matches = await getMatches(user.id);
-      const list = matches.map(m => m.profile).filter(Boolean) as Profile[];
+      let list = matches.map(m => m.profile).filter(Boolean) as Profile[];
+
+      // Jika diarahkan langsung dengan parameter partner (?partner=xxx)
+      if (partnerParam) {
+        const found = list.find(p => p.id === partnerParam);
+        if (!found) {
+          const partnerProfile = await getProfile(partnerParam);
+          if (partnerProfile) {
+            list = [partnerProfile, ...list];
+          }
+        }
+        setSelectedPartnerIds([partnerParam]);
+      } else if (list.length === 1) {
+        setSelectedPartnerIds([list[0].id]);
+      }
+
       setPartners(list);
-      if (!partnerParam && list.length === 1) setPartnerId(list[0].id);
       setLoading(false);
     })();
-  }, []);
+  }, [partnerParam]);
 
-  const selectedPartner = partners.find(p => p.id === partnerId);
-  // Mapel yang ditawarkan: gabungan mapel partner (jika ada) lalu semua mapel
+  const toggleSelectPartner = (id: string) => {
+    setSelectedPartnerIds(prev =>
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    );
+  };
+
+  const handleSelectAllPartners = () => {
+    if (selectedPartnerIds.length === partners.length) {
+      setSelectedPartnerIds([]);
+    } else {
+      setSelectedPartnerIds(partners.map(p => p.id));
+    }
+  };
+
+  const selectedPartners = useMemo(
+    () => partners.filter(p => selectedPartnerIds.includes(p.id)),
+    [partners, selectedPartnerIds]
+  );
+
+  // Matkul yang ditawarkan: gabungan matkul semua partner terpilih, lalu semua matkul
   const subjectOptions = useMemo(() => {
-    const fromPartner = selectedPartner?.subjects || [];
-    return [...fromPartner, ...SUBJECTS.filter(s => !fromPartner.includes(s))];
-  }, [selectedPartner]);
+    const fromPartners = Array.from(
+      new Set(selectedPartners.flatMap(p => p.subjects || []))
+    );
+    return [...fromPartners, ...SUBJECTS.filter(s => !fromPartners.includes(s))];
+  }, [selectedPartners]);
 
   const isSlotPast = (slot: { h: number; m: number }) => {
     if (!isSameDay(date, new Date())) return false;
@@ -73,7 +115,9 @@ export default function NewSessionScreen() {
 
   const handleSubmit = async () => {
     if (!userId) return;
-    if (!partnerId) return Alert.alert('Partner belum dipilih', 'Pilih partner belajarmu dulu.');
+    if (selectedPartnerIds.length === 0) {
+      return Alert.alert('Partner belum dipilih', 'Pilih minimal 1 partner belajarmu.');
+    }
     if (!title.trim()) return Alert.alert('Judul kosong', 'Isi judul sesi belajar.');
     if (!time) return Alert.alert('Jam belum dipilih', 'Pilih jam mulai sesi.');
 
@@ -82,26 +126,37 @@ export default function NewSessionScreen() {
     if (scheduled.getTime() <= Date.now()) return Alert.alert('Waktu tidak valid', 'Pilih waktu di masa depan.');
 
     setSaving(true);
-    const { error } = await createStudySession({
-      title: title.trim(),
-      description: description.trim() || null,
-      organizer_id: userId,
-      partner_id: partnerId,
-      subject,
-      scheduled_at: scheduled.toISOString(),
-      duration_minutes: duration,
-      meeting_link: meetingLink.trim() || null,
-      status: 'pending',
-    });
+    const { error } = await createStudySession(
+      {
+        title: title.trim(),
+        description: description.trim() || null,
+        organizer_id: userId,
+        partner_id: selectedPartnerIds[0],
+        subject,
+        scheduled_at: scheduled.toISOString(),
+        duration_minutes: duration,
+        meeting_link: meetingLink.trim() || null,
+        status: 'pending',
+        organizer: currentUserProfile || undefined,
+      },
+      selectedPartnerIds
+    );
     setSaving(false);
 
     if (error) {
       Alert.alert('Gagal membuat sesi', error.message);
       return;
     }
-    Alert.alert('Berhasil 🎉', `Undangan sesi terkirim ke ${selectedPartner?.full_name || 'partner'}.`, [
-      { text: 'OK', onPress: () => router.back() },
-    ]);
+
+    const partnerNames = selectedPartners
+      .map(p => p.full_name?.split(' ')[0] || 'Partner')
+      .join(', ');
+
+    Alert.alert(
+      'Undangan Terkirim! 🎉',
+      `Undangan sesi belajar berhasil dikirim ke ${selectedPartnerIds.length} partner (${partnerNames}).`,
+      [{ text: 'OK', onPress: () => router.back() }]
+    );
   };
 
   return (
@@ -121,22 +176,73 @@ export default function NewSessionScreen() {
       ) : (
         <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-            {/* Partner */}
-            <Text style={styles.label}>Partner Belajar *</Text>
+            {/* Header Partner Section */}
+            <View style={styles.partnerHeaderRow}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Text style={styles.label}>Partner Belajar *</Text>
+                {selectedPartnerIds.length > 0 && (
+                  <View style={styles.selectedCountBadge}>
+                    <Text style={styles.selectedCountText}>
+                      {selectedPartnerIds.length} Dipilih
+                    </Text>
+                  </View>
+                )}
+              </View>
+
+              {partners.length > 1 && (
+                <TouchableOpacity
+                  onPress={handleSelectAllPartners}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Text style={styles.selectAllText}>
+                    {selectedPartnerIds.length === partners.length ? 'Batal Semua' : 'Pilih Semua'}
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            <Text style={styles.partnerHint}>
+              💡 Kamu bisa memilih lebih dari 1 partner untuk belajar kelompok bersama
+            </Text>
+
             {partners.length === 0 ? (
               <View style={styles.emptyBox}>
-                <Text style={styles.emptyText}>Kamu belum memiliki teman belajar. Cari partner dulu di tab Temukan atau Teman 💫</Text>
+                <Text style={styles.emptyText}>Kamu belum memiliki teman belajar. Cari partner dulu untuk mulai belajar bareng 💫</Text>
+                <TouchableOpacity
+                  style={styles.findPartnerBtn}
+                  onPress={() => router.push('/nearby')}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.findPartnerBtnText}>🔍 Cari Teman Belajar</Text>
+                </TouchableOpacity>
               </View>
             ) : (
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.hRow}>
                 {partners.map(p => {
-                  const active = p.id === partnerId;
+                  const active = selectedPartnerIds.includes(p.id);
                   return (
-                    <TouchableOpacity key={p.id} style={[styles.partnerCard, active && styles.partnerCardActive]} onPress={() => setPartnerId(p.id)}>
-                      <Image source={{ uri: avatarOf(p) }} style={styles.partnerAvatar} contentFit="cover" />
+                    <TouchableOpacity
+                      key={p.id}
+                      style={[styles.partnerCard, active && styles.partnerCardActive]}
+                      onPress={() => toggleSelectPartner(p.id)}
+                      activeOpacity={0.8}
+                    >
+                      <View style={styles.avatarWrap}>
+                        <Image source={{ uri: avatarOf(p) }} style={styles.partnerAvatar} contentFit="cover" />
+                        {active && (
+                          <View style={styles.checkBadge}>
+                            <Text style={styles.checkIcon}>✓</Text>
+                          </View>
+                        )}
+                      </View>
                       <Text style={[styles.partnerName, active && styles.textActive]} numberOfLines={1}>
                         {p.full_name?.split(' ')[0] || 'User'}
                       </Text>
+                      {p.university && (
+                        <Text style={[styles.partnerUni, active && styles.textActiveSub]} numberOfLines={1}>
+                          {p.university}
+                        </Text>
+                      )}
                     </TouchableOpacity>
                   );
                 })}
@@ -147,11 +253,11 @@ export default function NewSessionScreen() {
             <Text style={styles.label}>Judul Sesi *</Text>
             <TextInput
               style={styles.input} value={title} onChangeText={setTitle} maxLength={80}
-              placeholder="cth: Latihan soal Integral" placeholderTextColor={Colors.textMuted}
+              placeholder="cth: Latihan Soal Integral & Aljabar Linear" placeholderTextColor={Colors.textMuted}
             />
 
-            {/* Mapel */}
-            <Text style={styles.label}>Mata Pelajaran</Text>
+            {/* Mata Kuliah */}
+            <Text style={styles.label}>Mata Kuliah</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.hRow}>
               {subjectOptions.map(s => {
                 const active = s === subject;
@@ -227,15 +333,32 @@ export default function NewSessionScreen() {
                 <Text style={styles.summaryText}>
                   📅 {format(date, 'EEEE, d MMMM yyyy', { locale: id })} • 🕐 {String(time.h).padStart(2, '0')}:{time.m === 0 ? '00' : '30'} • {duration} menit
                 </Text>
+                {selectedPartners.length > 0 && (
+                  <Text style={styles.summaryPartnersText}>
+                    👥 Belajar bersama: {selectedPartners.map(p => p.full_name?.split(' ')[0] || 'Partner').join(', ')}
+                  </Text>
+                )}
               </View>
             )}
 
-            <TouchableOpacity style={styles.submitBtn} onPress={handleSubmit} disabled={saving || partners.length === 0}>
+            <TouchableOpacity
+              style={styles.submitBtn}
+              onPress={handleSubmit}
+              disabled={saving || selectedPartnerIds.length === 0}
+            >
               <LinearGradient
-                colors={partners.length === 0 ? ['#ccc', '#bbb'] : [Colors.secondary, Colors.primary]}
+                colors={selectedPartnerIds.length === 0 ? ['#ccc', '#bbb'] : [Colors.secondary, Colors.primary]}
                 start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.submitGradient}
               >
-                {saving ? <ActivityIndicator color={Colors.white} /> : <Text style={styles.submitText}>📨 Kirim Undangan Sesi</Text>}
+                {saving ? (
+                  <ActivityIndicator color={Colors.white} />
+                ) : (
+                  <Text style={styles.submitText}>
+                    {selectedPartnerIds.length > 1
+                      ? `📨 Kirim Undangan Sesi (${selectedPartnerIds.length} Partner)`
+                      : '📨 Kirim Undangan Sesi'}
+                  </Text>
+                )}
               </LinearGradient>
             </TouchableOpacity>
           </ScrollView>
@@ -253,13 +376,42 @@ const styles = StyleSheet.create({
   backIcon: { fontFamily: Fonts.bold, fontSize: 22, color: Colors.primary },
   headerTitle: { fontFamily: Fonts.extraBold, fontSize: 22, color: Colors.primary },
   scroll: { paddingHorizontal: Spacing.lg, paddingBottom: 60 },
-  label: { fontFamily: Fonts.bold, fontSize: 14, color: Colors.textPrimary, marginTop: Spacing.md, marginBottom: 8 },
+  partnerHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: Spacing.md,
+    marginBottom: 4,
+  },
+  label: { fontFamily: Fonts.bold, fontSize: 14, color: Colors.textPrimary },
+  selectedCountBadge: {
+    backgroundColor: Colors.primary,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: BorderRadius.full,
+  },
+  selectedCountText: {
+    fontFamily: Fonts.bold,
+    fontSize: 11,
+    color: Colors.white,
+  },
+  selectAllText: {
+    fontFamily: Fonts.bold,
+    fontSize: 12,
+    color: Colors.primary,
+  },
+  partnerHint: {
+    fontFamily: Fonts.regular,
+    fontSize: 12,
+    color: Colors.textMuted,
+    marginBottom: 10,
+  },
   input: {
     backgroundColor: 'rgba(255,255,255,0.9)', borderRadius: BorderRadius.md, borderWidth: 1.5,
     borderColor: Colors.border, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, color: Colors.textPrimary,
   },
   textArea: { minHeight: 90, textAlignVertical: 'top' },
-  hRow: { gap: 8, paddingRight: 8 },
+  hRow: { gap: 10, paddingRight: 8 },
   wrapRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   chip: {
     paddingHorizontal: 14, paddingVertical: 8, borderRadius: BorderRadius.full,
@@ -273,14 +425,35 @@ const styles = StyleSheet.create({
   chipDisabled: { opacity: 0.35 },
   chipText: { fontFamily: Fonts.medium, fontSize: 13, color: Colors.textSecondary },
   textActive: { color: Colors.white },
+  textActiveSub: { color: 'rgba(255, 255, 255, 0.85)' },
   textDisabled: { textDecorationLine: 'line-through' },
   partnerCard: {
-    width: 84, alignItems: 'center', padding: 10, borderRadius: BorderRadius.lg,
-    backgroundColor: 'rgba(255,255,255,0.85)', borderWidth: 2, borderColor: 'transparent', ...Shadow.small,
+    width: 90, alignItems: 'center', padding: 10, borderRadius: BorderRadius.lg,
+    backgroundColor: 'rgba(255,255,255,0.9)', borderWidth: 2, borderColor: 'transparent', ...Shadow.small,
   },
   partnerCardActive: { backgroundColor: Colors.primary, borderColor: Colors.secondary },
-  partnerAvatar: { width: 52, height: 52, borderRadius: 26, marginBottom: 6, borderWidth: 2, borderColor: Colors.white },
-  partnerName: { fontFamily: Fonts.semiBold, fontSize: 12, color: Colors.textPrimary },
+  avatarWrap: { position: 'relative', marginBottom: 6 },
+  partnerAvatar: { width: 52, height: 52, borderRadius: 26, borderWidth: 2, borderColor: Colors.white },
+  checkBadge: {
+    position: 'absolute',
+    top: -2,
+    right: -2,
+    backgroundColor: '#10b981',
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: Colors.white,
+  },
+  checkIcon: {
+    color: Colors.white,
+    fontSize: 11,
+    fontWeight: 'bold',
+  },
+  partnerName: { fontFamily: Fonts.semiBold, fontSize: 12, color: Colors.textPrimary, textAlign: 'center' },
+  partnerUni: { fontFamily: Fonts.regular, fontSize: 10, color: Colors.textMuted, textAlign: 'center', marginTop: 1 },
   dayCard: {
     width: 62, paddingVertical: 10, alignItems: 'center', borderRadius: BorderRadius.lg,
     backgroundColor: 'rgba(255,255,255,0.85)', borderWidth: 1.5, borderColor: Colors.border,
@@ -289,14 +462,37 @@ const styles = StyleSheet.create({
   dayName: { fontFamily: Fonts.medium, fontSize: 11, color: Colors.textSecondary, textTransform: 'capitalize' },
   dayNum: { fontFamily: Fonts.extraBold, fontSize: 20, fontWeight: '800', color: Colors.textPrimary, marginVertical: 2 },
   dayMonth: { fontFamily: Fonts.regular, fontSize: 11, color: Colors.textMuted },
-  emptyBox: { backgroundColor: 'rgba(255,255,255,0.75)', borderRadius: BorderRadius.lg, padding: Spacing.md },
-  emptyText: { fontFamily: Fonts.regular, fontSize: 13, color: Colors.textSecondary, textAlign: 'center' },
+  emptyBox: {
+    backgroundColor: 'rgba(255,255,255,0.75)',
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    alignItems: 'center',
+  },
+  emptyText: { fontFamily: Fonts.regular, fontSize: 13, color: Colors.textSecondary, textAlign: 'center', marginBottom: 10 },
+  findPartnerBtn: {
+    backgroundColor: Colors.primary,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: BorderRadius.full,
+  },
+  findPartnerBtnText: {
+    fontFamily: Fonts.bold,
+    fontSize: 12,
+    color: Colors.white,
+  },
   summary: {
     marginTop: Spacing.lg, padding: Spacing.md, borderRadius: BorderRadius.lg,
     backgroundColor: 'rgba(147,220,252,0.35)', borderWidth: 1, borderColor: Colors.accent,
   },
   summaryText: { fontFamily: Fonts.semiBold, fontSize: 13, color: '#1a5f7a', textAlign: 'center' },
+  summaryPartnersText: {
+    fontFamily: Fonts.bold,
+    fontSize: 13,
+    color: '#0369a1',
+    textAlign: 'center',
+    marginTop: 6,
+  },
   submitBtn: { marginTop: Spacing.lg, borderRadius: BorderRadius.full, overflow: 'hidden', ...Shadow.medium },
   submitGradient: { paddingVertical: 16, alignItems: 'center' },
-  submitText: { fontFamily: Fonts.bold, fontSize: 16, fontWeight: '700', color: Colors.white },
+  submitText: { fontFamily: Fonts.bold, fontSize: 15, fontWeight: '700', color: Colors.white },
 });

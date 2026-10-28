@@ -59,11 +59,28 @@ export default function UserProfileScreen() {
   const handleLikeUser = async () => {
     if (!currentUserId || !targetUserId || liking) return;
     setLiking(true);
-    await actionOnProfile(currentUserId, targetUserId, 'like');
+    const { error } = await actionOnProfile(currentUserId, targetUserId, 'like');
     setLiking(false);
+
+    if (error) {
+      Alert.alert('Gagal', error.message || 'Tidak dapat mengajak belajar.');
+      return;
+    }
+
     Alert.alert(
-      'Ajakan Terkirim! 🤝',
-      `Kamu telah mengajak ${profile?.full_name || 'partner ini'} belajar bareng! Jika dia juga tertarik, kalian akan terhubung di daftar Teman.`
+      'Partner Belajar Terhubung! 🎉',
+      `Kamu dan ${profile?.full_name || 'teman belajarmu'} sekarang sudah terhubung! Mau langsung jadwalkan sesi belajar atau mengobrol?`,
+      [
+        { text: 'Nanti', style: 'cancel' },
+        {
+          text: 'Jadwalkan Sesi 📅',
+          onPress: () => router.push(`/new-session?partner=${targetUserId}`),
+        },
+        {
+          text: 'Chat 💬',
+          onPress: handleStartChat,
+        },
+      ]
     );
   };
 
@@ -118,11 +135,6 @@ export default function UserProfileScreen() {
                   </Text>
                 </View>
               )}
-              {profile.grade_level && (
-                <View style={styles.badge}>
-                  <Text style={styles.badgeText}>🎓 {profile.grade_level}</Text>
-                </View>
-              )}
               {profile.study_style && (
                 <View style={[styles.badge, { backgroundColor: 'rgba(96,184,232,0.15)' }]}>
                   <Text style={[styles.badgeText, { color: '#0284c7' }]}>
@@ -166,7 +178,7 @@ export default function UserProfileScreen() {
             {/* Subjects */}
             {profile.subjects && profile.subjects.length > 0 && (
               <View style={styles.subjectsBox}>
-                <Text style={styles.boxTitle}>Pelajaran yang Dikuasai:</Text>
+                <Text style={styles.boxTitle}>Mata Kuliah yang Dikuasai:</Text>
                 <View style={styles.tagsWrap}>
                   {profile.subjects.map(s => (
                     <View key={s} style={styles.tag}>

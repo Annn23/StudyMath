@@ -16,7 +16,7 @@ async function getStats() {
 
   const { data: recentUsers } = await supabase
     .from('profiles')
-    .select('id, full_name, username, grade_level, created_at, average_rating')
+    .select('id, full_name, username, grade_level, university, created_at, average_rating')
     .order('created_at', { ascending: false })
     .limit(5);
 
@@ -96,7 +96,7 @@ export default async function AdminDashboard() {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr>
-                {['Nama', 'Jenjang', 'Rating', 'Bergabung'].map(h => (
+                {['Nama', 'Universitas', 'Rating', 'Bergabung'].map(h => (
                   <th key={h} style={{
                     textAlign: 'left', padding: '8px 10px', fontSize: 11,
                     color: '#9ca3af', fontWeight: 600, textTransform: 'uppercase',
@@ -112,12 +112,12 @@ export default async function AdminDashboard() {
                     {user.full_name || 'N/A'}
                   </td>
                   <td style={{ padding: '12px 10px', fontSize: 12 }}>
-                    {user.grade_level && (
+                    {(user.university || user.grade_level) && (
                       <span style={{
                         background: 'rgba(205,79,117,0.1)', color: '#cd4f75',
                         padding: '3px 8px', borderRadius: 999, fontWeight: 500,
                       }}>
-                        {user.grade_level}
+                        {user.university || 'Univ'}
                       </span>
                     )}
                   </td>
@@ -147,7 +147,7 @@ export default async function AdminDashboard() {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr>
-                {['Judul', 'Mapel', 'Status', 'Tanggal'].map(h => (
+                {['Judul', 'Mata Kuliah', 'Status', 'Tanggal'].map(h => (
                   <th key={h} style={{
                     textAlign: 'left', padding: '8px 10px', fontSize: 11,
                     color: '#9ca3af', fontWeight: 600, textTransform: 'uppercase',

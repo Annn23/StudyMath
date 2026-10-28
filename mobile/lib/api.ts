@@ -22,6 +22,7 @@ export const signUp = async (
   meta?: {
     username?: string;
     grade_level?: string;
+    university?: string;
     study_style?: string;
     location?: string;
     subjects?: string[];
@@ -37,6 +38,7 @@ export const signUp = async (
       data: {
         full_name: fullName,
         username: cleanUsername,
+        grade_level: 'Perkuliahan',
         ...(meta || {}),
       },
     },
@@ -49,7 +51,8 @@ export const signUp = async (
         .from('profiles')
         .update({
           username: cleanUsername || null,
-          grade_level: meta.grade_level || null,
+          grade_level: meta.grade_level || 'Perkuliahan',
+          university: meta.university || null,
           study_style: meta.study_style || null,
           location: meta.location || null,
           subjects: meta.subjects || [],
@@ -340,25 +343,129 @@ export const actionOnProfile = async (
   targetUserId: string,
   action: 'like' | 'pass' | 'super_like'
 ) => {
+  const isMatchAction = action === 'like' || action === 'super_like';
+
+  // 1. Simpan baris aksi
   const { data, error } = await supabase
     .from('matches')
     .upsert(
-      { user_id: userId, target_user_id: targetUserId, action },
+      {
+        user_id: userId,
+        target_user_id: targetUserId,
+        action,
+        is_matched: isMatchAction,
+      },
       { onConflict: 'user_id,target_user_id' }
     )
     .select()
     .single();
-  return { data, error };
+
+  if (isMatchAction && !error) {
+    // 2. Hubungkan dua arah (reverse match) agar target user juga otomatis memiliki teman belajar
+    try {
+      await supabase
+        .from('matches')
+        .upsert(
+          {
+            user_id: targetUserId,
+            target_user_id: userId,
+            action: 'like',
+            is_matched: true,
+          },
+          { onConflict: 'user_id,target_user_id' }
+        );
+    } catch (e) {
+      console.warn('[actionOnProfile] reverse match error:', e);
+    }
+
+    // 3. Pastikan ruang obrolan (conversation) langsung siap
+    try {
+      await getOrCreateConversation(userId, targetUserId);
+    } catch (e) {
+      console.warn('[actionOnProfile] getOrCreateConversation error:', e);
+    }
+  }
+
+  return { data: { ...(data || {}), is_matched: isMatchAction }, error };
 };
 
 export const getMatches = async (userId: string): Promise<Match[]> => {
-  const { data, error } = await supabase
-    .from('matches')
-    .select(`*, profile:target_user_id(*)`)
-    .eq('user_id', userId)
-    .eq('is_matched', true);
-  if (error) return [];
-  return data || [];
+  try {
+    // 1. Matches yang dibuat oleh user (user_id = userId)
+    const { data: myMatches, error: err1 } = await supabase
+      .from('matches')
+      .select('*')
+      .eq('user_id', userId)
+      .neq('action', 'pass');
+
+    // 2. Matches di mana user diajak belajar oleh orang lain (target_user_id = userId)
+    const { data: incomingMatches, error: err2 } = await supabase
+      .from('matches')
+      .select('*')
+      .eq('target_user_id', userId)
+      .neq('action', 'pass');
+
+    if (err1) console.warn('[getMatches] err1:', err1);
+    if (err2) console.warn('[getMatches] err2:', err2);
+
+    const partnerIdMap = new Map<string, { match: any; partnerId: string }>();
+
+    (myMatches || []).forEach(m => {
+      if (m.target_user_id) {
+        partnerIdMap.set(m.target_user_id, { match: m, partnerId: m.target_user_id });
+      }
+    });
+
+    (incomingMatches || []).forEach(m => {
+      if (m.user_id && !partnerIdMap.has(m.user_id)) {
+        partnerIdMap.set(m.user_id, {
+          match: { ...m, target_user_id: m.user_id },
+          partnerId: m.user_id,
+        });
+      }
+    });
+
+    // 3. Sertakan juga partner dari percakapan aktif jika ada
+    const { data: convs } = await supabase
+      .from('conversations')
+      .select('id, participant_1, participant_2')
+      .or(`participant_1.eq.${userId},participant_2.eq.${userId}`);
+
+    (convs || []).forEach(c => {
+      const otherId = c.participant_1 === userId ? c.participant_2 : c.participant_1;
+      if (otherId && !partnerIdMap.has(otherId)) {
+        partnerIdMap.set(otherId, {
+          match: {
+            id: c.id,
+            user_id: userId,
+            target_user_id: otherId,
+            action: 'like',
+            is_matched: true,
+            created_at: new Date().toISOString(),
+          },
+          partnerId: otherId,
+        });
+      }
+    });
+
+    // 4. Enrich dengan profil lengkap masing-masing partner
+    const entries = Array.from(partnerIdMap.values());
+    const enrichedMatches = await Promise.all(
+      entries.map(async ({ match, partnerId }) => {
+        const prof = await getProfile(partnerId);
+        return {
+          ...match,
+          is_matched: true,
+          profile: prof || undefined,
+        } as Match;
+      })
+    );
+
+    return enrichedMatches.filter(m => !!m.profile);
+  } catch (e) {
+    console.error('[getMatches] error:', e);
+    return [];
+  }
 };
 
 // ==================== CONVERSATIONS ====================
@@ -535,23 +642,174 @@ export const markMessagesRead = async (conversationId: string, userId: string) =
 
 // ==================== STUDY SESSIONS ====================
 
-export const getStudySessions = async (userId: string): Promise<StudySession[]> => {
+export const getSessionById = async (sessionId: string): Promise<StudySession | null> => {
   const { data, error } = await supabase
     .from('study_sessions')
     .select('*, organizer:organizer_id(*), partner:partner_id(*)')
-    .or(`organizer_id.eq.${userId},partner_id.eq.${userId}`)
-    .order('scheduled_at', { ascending: true });
-  if (error) return [];
-  return data || [];
+    .eq('id', sessionId)
+    .maybeSingle();
+
+  if (error || !data) return null;
+
+  const session = data as StudySession;
+
+  // Coba ambil peserta dari session_participants
+  try {
+    const { data: partData } = await supabase
+      .from('session_participants')
+      .select('*, profile:user_id(*)')
+      .eq('session_id', sessionId);
+
+    if (partData && partData.length > 0) {
+      session.participants = partData
+        .map((p: any) => p.profile)
+        .filter(Boolean) as Profile[];
+    }
+  } catch (err) {
+    // Abaikan jika tabel belum ada
+  }
+
+  // Jika participants belum terisi, coba ambil berdasarkan partner_ids atau partner_id
+  if (!session.participants || session.participants.length === 0) {
+    const pids =
+      session.partner_ids && session.partner_ids.length > 0
+        ? session.partner_ids
+        : session.partner_id
+        ? [session.partner_id]
+        : [];
+
+    if (pids.length > 0) {
+      const { data: profs } = await supabase
+        .from('profiles')
+        .select('*')
+        .in('id', pids);
+      if (profs && profs.length > 0) {
+        session.participants = profs as Profile[];
+      }
+    }
+  }
+
+  return session;
 };
 
-export const createStudySession = async (session: Partial<StudySession>) => {
-  const { data, error } = await supabase
+export const getStudySessions = async (userId: string): Promise<StudySession[]> => {
+  let participantSessionIds: string[] = [];
+  try {
+    const { data: partData } = await supabase
+      .from('session_participants')
+      .select('session_id')
+      .eq('user_id', userId);
+    if (partData && partData.length > 0) {
+      participantSessionIds = partData.map((p: any) => p.session_id);
+    }
+  } catch {
+    // Abaikan jika tabel belum ada
+  }
+
+  let query = supabase
     .from('study_sessions')
-    .insert(session)
+    .select('*, organizer:organizer_id(*), partner:partner_id(*)');
+
+  if (participantSessionIds.length > 0) {
+    query = query.or(
+      `organizer_id.eq.${userId},partner_id.eq.${userId},id.in.(${participantSessionIds.join(',')})`
+    );
+  } else {
+    query = query.or(`organizer_id.eq.${userId},partner_id.eq.${userId}`);
+  }
+
+  const { data, error } = await query.order('scheduled_at', { ascending: true });
+  if (error) return [];
+  return (data || []) as StudySession[];
+};
+
+export const createStudySession = async (
+  session: Partial<StudySession>,
+  partnerIds: string[] = []
+) => {
+  const pids =
+    partnerIds.length > 0
+      ? partnerIds
+      : session.partner_id
+      ? [session.partner_id]
+      : [];
+  const primaryPartnerId = pids[0] || session.partner_id;
+
+  const insertPayload: any = {
+    ...session,
+    partner_id: primaryPartnerId,
+    partner_ids: pids,
+  };
+
+  let { data, error } = await supabase
+    .from('study_sessions')
+    .insert(insertPayload)
     .select()
     .single();
-  return { data, error };
+
+  // Jika kolom partner_ids belum ada di database, coba lagi tanpa partner_ids
+  if (
+    error &&
+    (error.message?.includes('partner_ids') ||
+      error.code === '42703' ||
+      error.message?.includes('column'))
+  ) {
+    delete insertPayload.partner_ids;
+    const retry = await supabase
+      .from('study_sessions')
+      .insert(insertPayload)
+      .select()
+      .single();
+    data = retry.data;
+    error = retry.error;
+  }
+
+  if (error || !data) return { data, error };
+
+  const createdSession = data as StudySession;
+
+  // Simpan ke session_participants jika tabel sudah tersedia
+  try {
+    const participantsToInsert = [
+      {
+        session_id: createdSession.id,
+        user_id: session.organizer_id,
+        role: 'organizer',
+        status: 'confirmed',
+      },
+      ...pids.map((pid) => ({
+        session_id: createdSession.id,
+        user_id: pid,
+        role: 'participant',
+        status: 'pending',
+      })),
+    ];
+    await supabase.from('session_participants').insert(participantsToInsert);
+  } catch {
+    // Fallback halus jika tabel session_participants belum dibuat
+  }
+
+  // Kirim notifikasi 'session_invite' ke setiap partner yang dipilih
+  try {
+    const orgName = session.organizer?.full_name || 'Teman Belajar';
+    for (const pid of pids) {
+      await supabase.from('notifications').insert({
+        user_id: pid,
+        type: 'session_invite',
+        title: 'Undangan Sesi Belajar Baru 📅',
+        body: `${orgName} mengajakmu belajar bersama: ${session.title}`,
+        data: {
+          session_id: createdSession.id,
+          organizer_id: session.organizer_id,
+          title: session.title,
+        },
+      });
+    }
+  } catch {
+    // Abaikan kegagalan notifikasi non-fatal
+  }
+
+  return { data: createdSession, error: null };
 };
 
 export const updateSessionStatus = async (
@@ -565,6 +823,31 @@ export const updateSessionStatus = async (
     .select()
     .single();
   return { data, error };
+};
+
+export const notifySessionResponse = async (
+  sessionId: string,
+  organizerId: string,
+  responderName: string,
+  accepted: boolean,
+  sessionTitle: string
+) => {
+  try {
+    await supabase.from('notifications').insert({
+      user_id: organizerId,
+      type: accepted ? 'session_confirmed' : 'system',
+      title: accepted ? 'Undangan Sesi Diterima! 🎉' : 'Undangan Sesi Ditolak',
+      body: accepted
+        ? `${responderName} telah menerima undangan sesi: "${sessionTitle}"`
+        : `${responderName} berhalangan hadir pada sesi: "${sessionTitle}"`,
+      data: {
+        session_id: sessionId,
+        title: sessionTitle,
+      },
+    });
+  } catch (err) {
+    console.warn('notifySessionResponse error:', err);
+  }
 };
 
 // ==================== REVIEWS ====================

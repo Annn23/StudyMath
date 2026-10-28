@@ -204,7 +204,7 @@ export default function ProfileScreen() {
         {/* Subjects */}
         {profile?.subjects && profile.subjects.length > 0 && (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Mata Pelajaran</Text>
+            <Text style={styles.sectionTitle}>Mata Kuliah</Text>
             <View style={styles.subjectGrid}>
               {profile.subjects.map(s => (
                 <View key={s} style={styles.subjectChip}>

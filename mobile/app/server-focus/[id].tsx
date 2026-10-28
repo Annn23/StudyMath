@@ -10,16 +10,19 @@ import {
   Modal,
   Platform,
   FlatList,
+  ScrollView,
   ActivityIndicator,
   Dimensions,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
+import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams, router } from 'expo-router';
 import { WebView } from 'react-native-webview';
 import Svg, { Rect, Path } from 'react-native-svg';
 import { Colors, Fonts, BorderRadius, Shadow } from '../../constants/theme';
+import { supabase } from '../../lib/supabase';
 import {
   getCurrentUser,
   getProfile,
@@ -35,6 +38,18 @@ import { StudyServer, ServerMember, Profile } from '../../types';
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 type PomodoroMode = 'study' | 'short_break' | 'long_break';
+
+export type ActiveFocusParticipant = {
+  user_id: string;
+  full_name?: string | null;
+  username?: string | null;
+  avatar_url?: string | null;
+  is_running?: boolean;
+  time_left?: number;
+  mode?: PomodoroMode;
+  joined_at?: string;
+  is_simulated?: boolean;
+};
 
 /**
  * Custom SVG Video Camera Icon persis sesuai screenshot referensi
@@ -65,6 +80,7 @@ export default function ServerFocusScreen() {
   const [server, setServer] = useState<StudyServer | null>(null);
   const [members, setMembers] = useState<ServerMember[]>([]);
   const [currentUser, setCurrentUser] = useState<Profile | null>(null);
+  const [activeParticipants, setActiveParticipants] = useState<ActiveFocusParticipant[]>([]);
 
   // Pomodoro Timer States (Aturan 2: 25m, Aturan 3: 5m, Aturan 5: 15m)
   const [mode, setMode] = useState<PomodoroMode>('study');
@@ -106,6 +122,20 @@ export default function ServerFocusScreen() {
     if (user) {
       userProfile = await getProfile(user.id);
       setCurrentUser(userProfile);
+
+      // Inisialisasi diri sendiri sebagai partisipan aktif awal
+      setActiveParticipants([
+        {
+          user_id: user.id,
+          full_name: userProfile?.full_name || 'You',
+          username: userProfile?.username || null,
+          avatar_url: userProfile?.avatar_url || null,
+          is_running: false,
+          time_left: 25 * 60,
+          mode: 'study',
+          joined_at: new Date().toISOString(),
+        },
+      ]);
     }
 
     const [srv, mems] = await Promise.all([
@@ -143,7 +173,82 @@ export default function ServerFocusScreen() {
     }
   };
 
-  // Pomodoro Interval Timer
+  // Realtime Presence: Melacak siapa saja anggota yang BENAR-BENAR membuka / gabung sesi
+  useEffect(() => {
+    if (!serverId || !currentUser?.id) return;
+
+    const channel = supabase.channel(`focus_presence_${serverId}`, {
+      config: {
+        presence: {
+          key: currentUser.id,
+        },
+      },
+    });
+
+    channel
+      .on('presence', { event: 'sync' }, () => {
+        const state = channel.presenceState();
+        const activeList: ActiveFocusParticipant[] = [];
+        const seen = new Set<string>();
+
+        // Pastikan diri sendiri selalu ada
+        seen.add(currentUser.id);
+        activeList.push({
+          user_id: currentUser.id,
+          full_name: currentUser.full_name || 'You',
+          username: currentUser.username || null,
+          avatar_url: currentUser.avatar_url || null,
+          is_running: isRunning,
+          time_left: timeLeft,
+          mode: mode,
+          joined_at: new Date().toISOString(),
+        });
+
+        for (const key of Object.keys(state)) {
+          const presences = state[key] as any[];
+          if (presences && presences.length > 0) {
+            const p = presences[0] as ActiveFocusParticipant;
+            if (p?.user_id && !seen.has(p.user_id)) {
+              seen.add(p.user_id);
+              activeList.push(p);
+            }
+          }
+        }
+
+        // Pertahankan simulated buddy jika sedang diaktifkan untuk pengujian
+        setActiveParticipants((prev) => {
+          const simulated = prev.filter((p) => p.is_simulated && !seen.has(p.user_id));
+          return [...activeList, ...simulated];
+        });
+      })
+      .on('broadcast', { event: 'timer_update' }, ({ payload }) => {
+        if (!payload?.user_id || payload.user_id === currentUser.id) return;
+        setActiveParticipants((prev) =>
+          prev.map((p) => (p.user_id === payload.user_id ? { ...p, ...payload } : p))
+        );
+      })
+      .subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          await channel.track({
+            user_id: currentUser.id,
+            full_name: currentUser.full_name || 'Anggota',
+            username: currentUser.username || null,
+            avatar_url: currentUser.avatar_url || null,
+            is_running: isRunning,
+            time_left: timeLeft,
+            mode: mode,
+            joined_at: new Date().toISOString(),
+          });
+        }
+      });
+
+    return () => {
+      channel.untrack().catch(() => {});
+      supabase.removeChannel(channel);
+    };
+  }, [serverId, currentUser?.id]);
+
+  // Pomodoro Interval Timer untuk User ini
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | null = null;
     if (isRunning && timeLeft > 0) {
@@ -161,6 +266,27 @@ export default function ServerFocusScreen() {
       if (timer) clearInterval(timer);
     };
   }, [isRunning, timeLeft]);
+
+  // Interval timer independen untuk simulated buddies (untuk testing multi-member)
+  useEffect(() => {
+    const hasRunningSim = activeParticipants.some(
+      (p) => p.is_simulated && p.is_running
+    );
+    if (!hasRunningSim) return;
+
+    const interval = setInterval(() => {
+      setActiveParticipants((prev) =>
+        prev.map((p) => {
+          if (p.is_simulated && p.is_running && (p.time_left ?? 0) > 0) {
+            return { ...p, time_left: (p.time_left ?? 0) - 1 };
+          }
+          return p;
+        })
+      );
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [activeParticipants]);
 
   const handleTimerComplete = () => {
     setIsRunning(false);
@@ -216,57 +342,153 @@ export default function ServerFocusScreen() {
     if (newCycle !== undefined) setCycle(newCycle);
     setIsRunning(false);
 
-    if (newMode === 'study') setTimeLeft(25 * 60);
-    else if (newMode === 'short_break') setTimeLeft(5 * 60);
-    else setTimeLeft(15 * 60);
+    let newSec = 25 * 60;
+    if (newMode === 'study') newSec = 25 * 60;
+    else if (newMode === 'short_break') newSec = 5 * 60;
+    else newSec = 15 * 60;
+    setTimeLeft(newSec);
+
+    if (currentUser?.id) {
+      setActiveParticipants((prev) =>
+        prev.map((p) =>
+          p.user_id === currentUser.id
+            ? { ...p, mode: newMode, is_running: false, time_left: newSec }
+            : p
+        )
+      );
+
+      try {
+        const channel = supabase.channel(`focus_presence_${serverId}`);
+        channel.send({
+          type: 'broadcast',
+          event: 'timer_update',
+          payload: {
+            user_id: currentUser.id,
+            is_running: false,
+            time_left: newSec,
+            mode: newMode,
+          },
+        });
+      } catch (e) {}
+    }
   };
 
   const toggleStartPause = () => {
-    setIsRunning((prev) => !prev);
+    const nextRunning = !isRunning;
+    setIsRunning(nextRunning);
+
+    if (currentUser?.id) {
+      setActiveParticipants((prev) =>
+        prev.map((p) =>
+          p.user_id === currentUser.id
+            ? { ...p, is_running: nextRunning, time_left: timeLeft }
+            : p
+        )
+      );
+
+      try {
+        const channel = supabase.channel(`focus_presence_${serverId}`);
+        channel.send({
+          type: 'broadcast',
+          event: 'timer_update',
+          payload: {
+            user_id: currentUser.id,
+            is_running: nextRunning,
+            time_left: timeLeft,
+            mode: mode,
+          },
+        });
+      } catch (e) {}
+    }
   };
 
   const resetTimer = () => {
     setIsRunning(false);
-    if (mode === 'study') setTimeLeft(25 * 60);
-    else if (mode === 'short_break') setTimeLeft(5 * 60);
-    else setTimeLeft(15 * 60);
+    let sec = 25 * 60;
+    if (mode === 'study') sec = 25 * 60;
+    else if (mode === 'short_break') sec = 5 * 60;
+    else sec = 15 * 60;
+    setTimeLeft(sec);
+
+    if (currentUser?.id) {
+      setActiveParticipants((prev) =>
+        prev.map((p) =>
+          p.user_id === currentUser.id ? { ...p, is_running: false, time_left: sec } : p
+        )
+      );
+    }
   };
 
-  // Format menit & detik
-  const minutes = Math.floor(timeLeft / 60);
-  const seconds = timeLeft % 60;
-  const timeFormatted = `${String(minutes).padStart(2, '0')} : ${String(seconds).padStart(2, '0')}`;
+  // Helper format detik ke MM : SS
+  const formatSeconds = (sec: number) => {
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${String(m).padStart(2, '0')} : ${String(s).padStart(2, '0')}`;
+  };
 
-  // Pemetaan 4 Slot Partisipan Sesuai Anggota Nyata Grup
-  const otherMembers = members.filter((m) => m.user_id !== currentUser?.id);
+  const timeFormatted = formatSeconds(timeLeft);
 
-  // Slot 1 (Kiri Atas)
-  const slot1Member = otherMembers[0];
-  const slot1Name = slot1Member
-    ? slot1Member.profile?.full_name || `@${slot1Member.profile?.username}` || 'Anggota 1'
-    : '+ Undang Teman';
-  const isSlot1Empty = !slot1Member;
+  // Filter HANYA partisipan yang benar-benar telah join ke sesi Pomodoro
+  const otherActiveParticipants = activeParticipants.filter(
+    (p) => p.user_id !== currentUser?.id
+  );
+  const otherGroupMembers = members.filter((m) => m.user_id !== currentUser?.id);
 
-  // Slot 2 (Kanan Atas)
-  const slot2Member = otherMembers[1];
-  const slot2Name = slot2Member
-    ? slot2Member.profile?.full_name || `@${slot2Member.profile?.username}` || 'Anggota 2'
-    : otherMembers.length === 0
-    ? 'Menunggu Teman'
-    : '+ Undang Teman';
-  const isSlot2Empty = !slot2Member;
+  // 4 Slot Partisipan
+  const slot1 = otherActiveParticipants[0];
+  const slot2 = otherActiveParticipants[1];
+  const slot3 = otherActiveParticipants[2];
 
-  // Slot 3 (Kiri Bawah)
-  const slot3Member = otherMembers[2];
-  const slot3Name = slot3Member
-    ? slot3Member.profile?.full_name || `@${slot3Member.profile?.username}` || 'Anggota 3'
-    : '+ Undang Teman';
-  const isSlot3Empty = !slot3Member;
+  // Jumlah partisipan yang benar-benar sedang belajar di sesi ini
+  const membersStudyingCount = 1 + otherActiveParticipants.length;
 
-  // Slot 4 (Kanan Bawah): Selalu "You"
-  const membersStudyingCount = Math.max(1, members.length);
+  // Panggil anggota grup agar masuk sesi
+  const handleNotifyMember = async (member: ServerMember) => {
+    if (!serverId || !currentUser?.id) return;
+    const name = member.profile?.full_name || `@${member.profile?.username}` || 'Teman';
+    const myName = currentUser.full_name || 'Teman Belajar';
+    try {
+      await sendServerMessage(
+        serverId,
+        currentUser.id,
+        `🍅 Halo @${name}, ${myName} sedang belajar di Sesi Pomodoro (${taskName}). Ayo gabung belajar bareng!`,
+        myName
+      );
+      Alert.alert('Ajakan Terkirim! 🔔', `Panggilan untuk ${name} telah dikirim ke obrolan grup.`);
+    } catch {
+      Alert.alert('Gagal', 'Tidak dapat mengirim ajakan.');
+    }
+  };
 
-  // Search user untuk diundang
+  // Uji coba memasukkan anggota ke sesi (Simulasi belajar bareng)
+  const handleSimulateBuddyJoin = (member: ServerMember) => {
+    const prof = member.profile;
+    const buddy: ActiveFocusParticipant = {
+      user_id: member.user_id,
+      full_name: prof?.full_name || 'Partner Belajar',
+      username: prof?.username || null,
+      avatar_url: prof?.avatar_url || null,
+      is_running: true,
+      time_left: 25 * 60,
+      mode: 'study',
+      joined_at: new Date().toISOString(),
+      is_simulated: true,
+    };
+    setActiveParticipants((prev) => {
+      if (prev.some((p) => p.user_id === member.user_id)) return prev;
+      return [...prev, buddy];
+    });
+    Alert.alert(
+      'Partner Masuk Sesi! 🎉',
+      `${prof?.full_name || 'Partner'} telah masuk ke sesi Pomodoro dan memulai timernya sendiri!`
+    );
+  };
+
+  const handleRemoveSimulatedBuddy = (userId: string) => {
+    setActiveParticipants((prev) => prev.filter((p) => p.user_id !== userId));
+  };
+
+  // Search user untuk diundang ke grup
   const handleSearchInvite = async (q: string) => {
     setInviteSearchQuery(q);
     if (!q.trim()) {
@@ -294,11 +516,11 @@ export default function ServerFocusScreen() {
     const res = await addServerMembers(serverId, selectedInviteUserIds);
     setIsAddingInvite(false);
     if (res.success) {
-      setShowInviteModal(false);
       setSelectedInviteUserIds([]);
       setInviteSearchQuery('');
       setInviteSearchResults([]);
       loadData();
+      Alert.alert('Berhasil', 'Anggota berhasil ditambahkan ke grup.');
     } else {
       Alert.alert('Gagal', 'Tidak dapat menambahkan anggota. Silakan coba lagi.');
     }
@@ -429,29 +651,53 @@ export default function ServerFocusScreen() {
           {/* Row 1: Slot 1 (Kiri Atas) & Slot 2 (Kanan Atas) */}
           <View style={styles.gridRow}>
             <ParticipantCard
-              name={slot1Name}
+              name={slot1 ? (slot1.full_name || `@${slot1.username}` || 'Partner 1') : '+ Undang Teman'}
               isSelf={false}
-              onPress={isSlot1Empty ? () => setShowInviteModal(true) : undefined}
+              isEmpty={!slot1}
+              statusBadge={
+                slot1
+                  ? `${slot1.is_running ? '🍅' : '⏸️'} ${formatSeconds(slot1.time_left ?? 25 * 60)}`
+                  : undefined
+              }
+              avatarUrl={slot1?.avatar_url}
+              onPress={!slot1 ? () => setShowInviteModal(true) : undefined}
             />
             <ParticipantCard
-              name={slot2Name}
+              name={slot2 ? (slot2.full_name || `@${slot2.username}` || 'Partner 2') : 'Menunggu Teman'}
               isSelf={false}
-              onPress={isSlot2Empty ? () => setShowInviteModal(true) : undefined}
+              isEmpty={!slot2}
+              statusBadge={
+                slot2
+                  ? `${slot2.is_running ? '🍅' : '⏸️'} ${formatSeconds(slot2.time_left ?? 25 * 60)}`
+                  : undefined
+              }
+              avatarUrl={slot2?.avatar_url}
+              onPress={!slot2 ? () => setShowInviteModal(true) : undefined}
             />
           </View>
 
           {/* Row 2: Slot 3 (Kiri Bawah) & Slot 4 (Kanan Bawah - You) */}
           <View style={styles.gridRow}>
             <ParticipantCard
-              name={slot3Name}
+              name={slot3 ? (slot3.full_name || `@${slot3.username}` || 'Partner 3') : 'Menunggu Teman'}
               isSelf={false}
-              onPress={isSlot3Empty ? () => setShowInviteModal(true) : undefined}
+              isEmpty={!slot3}
+              statusBadge={
+                slot3
+                  ? `${slot3.is_running ? '🍅' : '⏸️'} ${formatSeconds(slot3.time_left ?? 25 * 60)}`
+                  : undefined
+              }
+              avatarUrl={slot3?.avatar_url}
+              onPress={!slot3 ? () => setShowInviteModal(true) : undefined}
             />
             <ParticipantCard
               name="You"
               isSelf={true}
+              isEmpty={false}
+              statusBadge={`${isRunning ? '🍅' : '⏸️'} ${timeFormatted}`}
               isCameraOff={isCameraOff}
               isMicMuted={isMicMuted}
+              avatarUrl={currentUser?.avatar_url}
             />
           </View>
         </View>
@@ -588,7 +834,7 @@ export default function ServerFocusScreen() {
       {/* ==================== MODAL UNDANG TEMAN ==================== */}
       <Modal visible={showInviteModal} transparent animationType="slide">
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { maxHeight: '80%' }]}>
+          <View style={[styles.modalContent, { maxHeight: '85%' }]}>
             <View style={styles.inviteModalHeader}>
               <Text style={styles.modalHeading}>Undang Teman ke Sesi 👥</Text>
               <TouchableOpacity
@@ -598,73 +844,128 @@ export default function ServerFocusScreen() {
                 <Text style={styles.modalCloseText}>✕</Text>
               </TouchableOpacity>
             </View>
-            <Text style={styles.modalSub}>
-              Cari teman berdasarkan nama atau username untuk diajak belajar bersama:
-            </Text>
 
-            <TextInput
-              style={styles.inviteSearchInput}
-              value={inviteSearchQuery}
-              onChangeText={handleSearchInvite}
-              placeholder="Cari nama atau @username..."
-              placeholderTextColor="#94a3b8"
-            />
-
-            {isSearchingInvite ? (
-              <ActivityIndicator size="small" color={Colors.primary} style={{ marginVertical: 20 }} />
-            ) : (
-              <FlatList
-                data={inviteSearchResults}
-                keyExtractor={(item) => item.id}
-                style={{ maxHeight: 220, marginBottom: 12 }}
-                renderItem={({ item }) => {
-                  const isSelected = selectedInviteUserIds.includes(item.id);
-                  return (
-                    <TouchableOpacity
-                      style={[styles.userPickRow, isSelected && styles.userPickRowSelected]}
-                      onPress={() => toggleSelectInviteUser(item.id)}
-                      activeOpacity={0.7}
-                    >
-                      <View style={styles.userPickInfo}>
-                        <Text style={styles.userPickName}>{item.full_name || 'Pengguna'}</Text>
-                        <Text style={styles.userPickUsername}>@{item.username}</Text>
-                      </View>
-                      <View style={[styles.checkbox, isSelected && styles.checkboxSelected]}>
-                        {isSelected && <Text style={styles.checkboxCheck}>✓</Text>}
-                      </View>
-                    </TouchableOpacity>
-                  );
-                }}
-                ListEmptyComponent={
-                  inviteSearchQuery.trim() ? (
-                    <Text style={styles.emptyText}>Tidak ada pengguna yang cocok</Text>
-                  ) : (
-                    <Text style={styles.emptyText}>Ketik nama teman di atas untuk mencari</Text>
-                  )
-                }
-              />
-            )}
-
-            <TouchableOpacity
-              style={[
-                styles.modalSaveBtn,
-                (selectedInviteUserIds.length === 0 || isAddingInvite) && { opacity: 0.5 },
-              ]}
-              disabled={selectedInviteUserIds.length === 0 || isAddingInvite}
-              onPress={handleAddInvitedMembers}
-            >
-              {isAddingInvite ? (
-                <ActivityIndicator color="#ffffff" />
-              ) : (
-                <Text style={styles.modalSaveText}>
-                  Tambahkan ke Sesi ({selectedInviteUserIds.length})
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 16 }}>
+              {/* 1. Anggota Grup Server (Belum Masuk Sesi) */}
+              <View style={styles.inviteSection}>
+                <Text style={styles.inviteSectionTitle}>
+                  Anggota Grup Ini ({otherGroupMembers.length})
                 </Text>
-              )}
-            </TouchableOpacity>
+                <Text style={styles.inviteSectionSubtitle}>
+                  Panggil anggota grup untuk bergabung ke sesi Pomodoro Anda:
+                </Text>
+
+                {otherGroupMembers.length === 0 ? (
+                  <Text style={styles.emptyText}>Belum ada anggota lain di grup ini.</Text>
+                ) : (
+                  otherGroupMembers.map((m) => {
+                    const prof = m.profile;
+                    const isJoined = otherActiveParticipants.some((p) => p.user_id === m.user_id);
+                    const isSimulated = activeParticipants.some(
+                      (p) => p.user_id === m.user_id && p.is_simulated
+                    );
+
+                    return (
+                      <View key={m.id} style={styles.groupMemberInviteRow}>
+                        <View style={styles.groupMemberInfo}>
+                          <Text style={styles.groupMemberName}>
+                            {prof?.full_name || 'Anggota'}
+                          </Text>
+                          <Text style={styles.groupMemberRole}>
+                            {isJoined ? '🟢 Sedang di dalam sesi' : '⚪ Belum join sesi'}
+                          </Text>
+                        </View>
+
+                        <View style={styles.groupMemberActionButtons}>
+                          {isSimulated ? (
+                            <TouchableOpacity
+                              style={styles.leaveSimBtn}
+                              onPress={() => handleRemoveSimulatedBuddy(m.user_id)}
+                            >
+                              <Text style={styles.leaveSimBtnText}>❌ Keluarkan</Text>
+                            </TouchableOpacity>
+                          ) : isJoined ? (
+                            <View style={styles.inSessionBadge}>
+                              <Text style={styles.inSessionBadgeText}>✓ Di Sesi</Text>
+                            </View>
+                          ) : (
+                            <>
+                              <TouchableOpacity
+                                style={styles.notifyMemberBtn}
+                                onPress={() => handleNotifyMember(m)}
+                              >
+                                <Text style={styles.notifyMemberBtnText}>🔔 Panggil</Text>
+                              </TouchableOpacity>
+                              <TouchableOpacity
+                                style={styles.simulateJoinBtn}
+                                onPress={() => handleSimulateBuddyJoin(m)}
+                              >
+                                <Text style={styles.simulateJoinBtnText}>▶️ Uji Masuk</Text>
+                              </TouchableOpacity>
+                            </>
+                          )}
+                        </View>
+                      </View>
+                    );
+                  })
+                )}
+              </View>
+
+              {/* 2. Cari & Tambah Anggota Baru ke Grup */}
+              <View style={[styles.inviteSection, { marginTop: 16 }]}>
+                <Text style={styles.inviteSectionTitle}>Undang Teman Baru ke Grup</Text>
+                <TextInput
+                  style={styles.inviteSearchInput}
+                  value={inviteSearchQuery}
+                  onChangeText={handleSearchInvite}
+                  placeholder="Cari nama atau @username..."
+                  placeholderTextColor="#94a3b8"
+                />
+
+                {isSearchingInvite ? (
+                  <ActivityIndicator size="small" color={Colors.primary} style={{ marginVertical: 12 }} />
+                ) : (
+                  inviteSearchResults.map((item) => {
+                    const isSelected = selectedInviteUserIds.includes(item.id);
+                    return (
+                      <TouchableOpacity
+                        key={item.id}
+                        style={[styles.userPickRow, isSelected && styles.userPickRowSelected]}
+                        onPress={() => toggleSelectInviteUser(item.id)}
+                        activeOpacity={0.7}
+                      >
+                        <View style={styles.userPickInfo}>
+                          <Text style={styles.userPickName}>{item.full_name || 'Pengguna'}</Text>
+                          <Text style={styles.userPickUsername}>@{item.username}</Text>
+                        </View>
+                        <View style={[styles.checkbox, isSelected && styles.checkboxSelected]}>
+                          {isSelected && <Text style={styles.checkboxCheck}>✓</Text>}
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })
+                )}
+
+                {selectedInviteUserIds.length > 0 && (
+                  <TouchableOpacity
+                    style={[styles.modalSaveBtn, isAddingInvite && { opacity: 0.5 }]}
+                    disabled={isAddingInvite}
+                    onPress={handleAddInvitedMembers}
+                  >
+                    {isAddingInvite ? (
+                      <ActivityIndicator color="#ffffff" />
+                    ) : (
+                      <Text style={styles.modalSaveText}>
+                        Tambahkan ke Grup ({selectedInviteUserIds.length})
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                )}
+              </View>
+            </ScrollView>
           </View>
         </View>
       </Modal>
-
 
     </View>
   );
@@ -680,18 +981,31 @@ function ParticipantCard({
   isSelf = false,
   isCameraOff = false,
   isMicMuted = false,
+  isEmpty = false,
+  statusBadge,
+  avatarUrl,
   onPress,
 }: {
   name: string;
   isSelf?: boolean;
   isCameraOff?: boolean;
   isMicMuted?: boolean;
+  isEmpty?: boolean;
+  statusBadge?: string;
+  avatarUrl?: string | null;
   onPress?: () => void;
 }) {
   const content = (
-    <View style={styles.participantCard}>
-      {/* Top area untuk mic badge */}
+    <View style={[styles.participantCard, isEmpty && styles.participantCardEmpty]}>
+      {/* Top area untuk mic badge & status timer */}
       <View style={styles.cardTopArea}>
+        {statusBadge && !isEmpty ? (
+          <View style={styles.statusPill}>
+            <Text style={styles.statusPillText}>{statusBadge}</Text>
+          </View>
+        ) : (
+          <View style={{ flex: 1 }} />
+        )}
         {isSelf && (
           <View style={styles.selfMicBadge}>
             <Text style={styles.selfMicText}>{isMicMuted ? '🔇' : '🎙️'}</Text>
@@ -699,20 +1013,29 @@ function ParticipantCard({
         )}
       </View>
 
-      {/* Center area untuk Ikon Kamera Video Putih Solid */}
+      {/* Center area untuk Ikon / Avatar */}
       <View style={styles.cardCenterIconWrap}>
-        {isSelf && isCameraOff ? (
+        {isEmpty ? (
+          <View style={styles.emptySlotIconWrap}>
+            <Text style={styles.emptySlotPlus}>➕</Text>
+          </View>
+        ) : isSelf && isCameraOff ? (
           <View style={styles.camOffBody}>
             <Text style={styles.camOffText}>🚫</Text>
           </View>
+        ) : avatarUrl ? (
+          <Image source={{ uri: avatarUrl }} style={styles.participantAvatar} contentFit="cover" />
         ) : (
           <VideoCamIcon size={40} color="#ffffff" />
         )}
       </View>
 
-      {/* Bottom area untuk Nama Partisipan (In-flow flex layout, tidak akan bertumpuk!) */}
+      {/* Bottom area untuk Nama Partisipan */}
       <View style={styles.cardBottomArea}>
-        <Text style={styles.participantName} numberOfLines={1}>
+        <Text
+          style={[styles.participantName, isEmpty && styles.participantNameEmpty]}
+          numberOfLines={1}
+        >
           {name}
         </Text>
       </View>
@@ -1208,5 +1531,147 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginVertical: 14,
     fontFamily: Fonts.regular,
+  },
+
+  // Kartu Partisipan Kosong / Menunggu
+  participantCardEmpty: {
+    borderStyle: 'dashed',
+    backgroundColor: 'rgba(255, 255, 255, 0.22)',
+    borderColor: 'rgba(255, 255, 255, 0.65)',
+  },
+  participantNameEmpty: {
+    color: 'rgba(15, 23, 42, 0.6)',
+    fontStyle: 'italic',
+    fontSize: 13,
+  },
+  emptySlotIconWrap: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: 'rgba(255, 255, 255, 0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptySlotPlus: {
+    fontSize: 22,
+    color: '#ffffff',
+  },
+  participantAvatar: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    borderWidth: 2,
+    borderColor: '#ffffff',
+  },
+  statusPill: {
+    backgroundColor: 'rgba(255, 255, 255, 0.92)',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: BorderRadius.full,
+    borderWidth: 1,
+    borderColor: '#ff4d15',
+  },
+  statusPillText: {
+    fontFamily: Fonts.bold,
+    fontSize: 10,
+    color: '#ff4d15',
+  },
+
+  // Modal Section & Group Members
+  inviteSection: {
+    marginBottom: 16,
+  },
+  inviteSectionTitle: {
+    fontFamily: Fonts.bold,
+    fontSize: 14.5,
+    color: '#0f172a',
+    marginBottom: 2,
+  },
+  inviteSectionSubtitle: {
+    fontFamily: Fonts.regular,
+    fontSize: 12,
+    color: '#64748b',
+    marginBottom: 10,
+  },
+  groupMemberInviteRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#f8fafc',
+    padding: 10,
+    borderRadius: 14,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#f1f5f9',
+  },
+  groupMemberInfo: {
+    flex: 1,
+    marginRight: 8,
+  },
+  groupMemberName: {
+    fontFamily: Fonts.bold,
+    fontSize: 13,
+    color: '#0f172a',
+  },
+  groupMemberRole: {
+    fontFamily: Fonts.medium,
+    fontSize: 11,
+    color: '#64748b',
+    marginTop: 2,
+  },
+  groupMemberActionButtons: {
+    flexDirection: 'row',
+    gap: 6,
+    alignItems: 'center',
+  },
+  notifyMemberBtn: {
+    backgroundColor: '#eff6ff',
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: BorderRadius.full,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+  },
+  notifyMemberBtnText: {
+    fontFamily: Fonts.bold,
+    fontSize: 11,
+    color: '#1d4ed8',
+  },
+  simulateJoinBtn: {
+    backgroundColor: '#f0fdf4',
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: BorderRadius.full,
+    borderWidth: 1,
+    borderColor: '#bbf7d0',
+  },
+  simulateJoinBtnText: {
+    fontFamily: Fonts.bold,
+    fontSize: 11,
+    color: '#15803d',
+  },
+  leaveSimBtn: {
+    backgroundColor: '#fef2f2',
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: BorderRadius.full,
+    borderWidth: 1,
+    borderColor: '#fecaca',
+  },
+  leaveSimBtnText: {
+    fontFamily: Fonts.bold,
+    fontSize: 11,
+    color: '#b91c1c',
+  },
+  inSessionBadge: {
+    backgroundColor: '#dcfce7',
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: BorderRadius.full,
+  },
+  inSessionBadgeText: {
+    fontFamily: Fonts.bold,
+    fontSize: 11,
+    color: '#166534',
   },
 });

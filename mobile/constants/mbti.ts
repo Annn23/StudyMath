@@ -231,7 +231,7 @@ export const MBTI_TYPES: Record<string, MbtiTypeInfo> = {
     emoji: '🛡️',
     tagline: 'Hangat, sangat telaten, setia & selalu siap membantu teman',
     description:
-      'ISFJ adalah teman belajar yang luar biasa baik hati. Mereka sangat teliti dalam mencatat pelajaran dan senang berbagi catatan rapi mereka dengan teman sekelas.',
+      'ISFJ adalah teman belajar yang luar biasa baik hati. Mereka sangat teliti dalam mencatat materi kuliah dan senang berbagi catatan rapi mereka dengan teman sekelas.',
     studyStyle:
       'Belajar tenang dengan pengulangan rutin dan contoh soal bertahap. Menyukai suasana belajar yang harmonis, saling menghargai, dan tidak kompetitif.',
     studyTips: [

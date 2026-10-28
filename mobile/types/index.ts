@@ -55,6 +55,7 @@ export type StudySession = {
   description: string | null;
   organizer_id: string;
   partner_id: string;
+  partner_ids?: string[];
   subject: string | null;
   scheduled_at: string;
   duration_minutes: number;
@@ -64,6 +65,17 @@ export type StudySession = {
   updated_at: string;
   organizer?: Profile;
   partner?: Profile;
+  participants?: Profile[];
+};
+
+export type SessionParticipant = {
+  id: string;
+  session_id: string;
+  user_id: string;
+  role: 'organizer' | 'participant';
+  status: 'pending' | 'confirmed' | 'declined';
+  created_at: string;
+  profile?: Profile;
 };
 
 export type Review = {

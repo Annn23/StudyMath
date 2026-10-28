@@ -62,9 +62,9 @@ export default function MatchesScreen() {
         </View>
         <View style={styles.matchInfo}>
           <Text style={styles.matchName}>{profile.full_name || 'Pengguna'}</Text>
-          {profile.grade_level && (
-            <Text style={styles.matchGrade}>{profile.grade_level}</Text>
-          )}
+          {profile.university ? (
+            <Text style={styles.matchGrade}>🏛️ {profile.university}</Text>
+          ) : null}
           {profile.subjects && profile.subjects.length > 0 && (
             <Text style={styles.matchSubjects} numberOfLines={1}>
               📚 {profile.subjects.slice(0, 2).join(', ')}
@@ -81,21 +81,32 @@ export default function MatchesScreen() {
             </View>
           )}
         </View>
-        <TouchableOpacity
-          style={styles.chatBtn}
-          onPress={() => handleOpenChat(item)}
-          disabled={isOpening}
-        >
-          <LinearGradient
-            colors={[Colors.secondary, Colors.primary]}
-            style={styles.chatBtnGradient}
+        <View style={styles.cardActions}>
+          <TouchableOpacity
+            style={styles.actionCircleBtn}
+            onPress={() => router.push(`/new-session?partner=${profile.id}`)}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
-            {isOpening
-              ? <ActivityIndicator color={Colors.white} size="small" />
-              : <Text style={styles.chatBtnText}>💬</Text>
-            }
-          </LinearGradient>
-        </TouchableOpacity>
+            <View style={styles.sessionBtnContent}>
+              <Text style={styles.sessionBtnText}>📅</Text>
+            </View>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.chatBtn}
+            onPress={() => handleOpenChat(item)}
+            disabled={isOpening}
+          >
+            <LinearGradient
+              colors={[Colors.secondary, Colors.primary]}
+              style={styles.chatBtnGradient}
+            >
+              {isOpening
+                ? <ActivityIndicator color={Colors.white} size="small" />
+                : <Text style={styles.chatBtnText}>💬</Text>
+              }
+            </LinearGradient>
+          </TouchableOpacity>
+        </View>
       </TouchableOpacity>
     );
   };
@@ -122,7 +133,7 @@ export default function MatchesScreen() {
           <Text style={styles.emptyEmoji}>👥</Text>
           <Text style={styles.emptyTitle}>Belum ada teman belajar</Text>
           <Text style={styles.emptySubtitle}>
-            Cari teman belajar via username atau mata pelajaran untuk mulai belajar bareng!
+            Cari teman belajar via username atau mata kuliah untuk mulai belajar bareng!
           </Text>
           <TouchableOpacity
             style={styles.discoverBtn}
@@ -177,9 +188,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8, paddingVertical: 2, borderRadius: BorderRadius.full,
   },
   availText: { fontFamily: Fonts.medium, fontSize: 11, color: '#059669' },
-  chatBtn: { width: 48, height: 48, borderRadius: 24, overflow: 'hidden' },
+  cardActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  actionCircleBtn: {
+    width: 44, height: 44, borderRadius: 22,
+    borderWidth: 1.5, borderColor: 'rgba(205,79,117,0.25)',
+    backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center',
+    ...Shadow.small,
+  },
+  sessionBtnContent: { alignItems: 'center', justifyContent: 'center' },
+  sessionBtnText: { fontSize: 18 },
+  chatBtn: { width: 44, height: 44, borderRadius: 22, overflow: 'hidden' },
   chatBtnGradient: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  chatBtnText: { fontSize: 20 },
+  chatBtnText: { fontSize: 18 },
   emptyState: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.xl },
   emptyEmoji: { fontSize: 64, marginBottom: 16 },
   emptyTitle: { fontFamily: Fonts.bold, fontSize: 22, color: Colors.textPrimary, marginBottom: 8 },

@@ -189,9 +189,10 @@ export async function updateCallStatus(room: string, status: CallStatus, receive
 
   // 3. Update database
   try {
+    const dbStatus = status === 'timeout' ? 'ended' : status;
     await supabase
       .from('active_calls')
-      .update({ status, updated_at: new Date().toISOString() })
+      .update({ status: dbStatus, updated_at: new Date().toISOString() })
       .eq('room_name', room);
   } catch {
     // ignore jika belum ada tabel

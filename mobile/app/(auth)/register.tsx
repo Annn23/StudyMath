@@ -9,7 +9,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { Colors, Fonts, BorderRadius, Spacing } from '../../constants/theme';
 import { signUp } from '../../lib/api';
-import { SUBJECTS, GRADE_LEVELS, STUDY_STYLES } from '../../types';
+import { SUBJECTS, STUDY_STYLES } from '../../types';
 
 type Step = 1 | 2 | 3;
 
@@ -25,7 +25,7 @@ export default function RegisterScreen() {
   const [confirmPassword, setConfirmPassword] = useState('');
 
   // Step 2
-  const [gradeLevel, setGradeLevel] = useState('Perkuliahan');
+  const [university, setUniversity] = useState('');
   const [studyStyle, setStudyStyle] = useState('');
   const [location, setLocation] = useState('');
 
@@ -55,7 +55,7 @@ export default function RegisterScreen() {
 
   const validateStep2 = () => {
     const e: typeof errors = {};
-    if (!gradeLevel) e.gradeLevel = 'Pilih jenjang pendidikan';
+    if (!university.trim()) e.university = 'Masukkan nama universitas / kampus kamu';
     if (!studyStyle) e.studyStyle = 'Pilih gaya belajarmu';
     setErrors(e);
     return Object.keys(e).length === 0;
@@ -63,7 +63,7 @@ export default function RegisterScreen() {
 
   const validateStep3 = () => {
     const e: typeof errors = {};
-    if (selectedSubjects.length === 0) e.subjects = 'Pilih minimal 1 mata pelajaran';
+    if (selectedSubjects.length === 0) e.subjects = 'Pilih minimal 1 mata kuliah';
     setErrors(e);
     return Object.keys(e).length === 0;
   };
@@ -90,7 +90,8 @@ export default function RegisterScreen() {
         fullName.trim(),
         {
           username: cleanU,
-          grade_level: gradeLevel,
+          grade_level: 'Perkuliahan',
+          university: university.trim(),
           study_style: studyStyle,
           location: location.trim() || undefined,
           subjects: selectedSubjects,
@@ -136,7 +137,7 @@ export default function RegisterScreen() {
           <View style={styles.header}>
             <Text style={styles.title}>Buat Akun</Text>
             <Text style={styles.subtitle}>
-              {step === 1 ? 'Informasi Dasar' : step === 2 ? 'Profil Belajar' : 'Mata Pelajaran'}
+              {step === 1 ? 'Informasi Dasar' : step === 2 ? 'Profil Kampus & Belajar' : 'Mata Kuliah'}
             </Text>
 
             {/* Progress Bar */}
@@ -187,23 +188,27 @@ export default function RegisterScreen() {
             {/* ===== STEP 2 ===== */}
             {step === 2 && (
               <>
-                <Text style={styles.sectionLabel}>Jenjang Pendidikan</Text>
-                <View style={styles.chipRow}>
-                  {GRADE_LEVELS.map(level => (
+                <InputField
+                  label="Universitas / Kampus *" icon="🏛️" placeholder="misal: Universitas Indonesia, ITB, UGM..."
+                  value={university} onChangeText={setUniversity} error={errors.university}
+                />
+
+                <Text style={styles.quickUnivHint}>Pilihan Cepat Kampus Populer:</Text>
+                <View style={[styles.chipRow, { marginBottom: Spacing.sm }]}>
+                  {['UI', 'ITB', 'UGM', 'ITS', 'UNAIR', 'UNDIP', 'UB', 'UNPAD', 'Telkom', 'Binus'].map(short => (
                     <TouchableOpacity
-                      key={level}
-                      style={[styles.chip, gradeLevel === level && styles.chipActive]}
-                      onPress={() => setGradeLevel(level)}
+                      key={short}
+                      style={[styles.chip, university === short && styles.chipActive]}
+                      onPress={() => setUniversity(university === short ? '' : short)}
                     >
-                      <Text style={[styles.chipText, gradeLevel === level && styles.chipTextActive]}>
-                        {level}
+                      <Text style={[styles.chipText, university === short && styles.chipTextActive]}>
+                        🏛️ {short}
                       </Text>
                     </TouchableOpacity>
                   ))}
                 </View>
-                {errors.gradeLevel && <Text style={styles.errorText}>{errors.gradeLevel}</Text>}
 
-                <Text style={[styles.sectionLabel, { marginTop: Spacing.md }]}>Gaya Belajar</Text>
+                <Text style={[styles.sectionLabel, { marginTop: Spacing.xs }]}>Gaya Belajar</Text>
                 {STUDY_STYLES.map(s => (
                   <TouchableOpacity
                     key={s.value}
@@ -233,9 +238,9 @@ export default function RegisterScreen() {
             {step === 3 && (
               <>
                 <Text style={styles.sectionLabel}>
-                  Mata Pelajaran ({selectedSubjects.length} dipilih)
+                  Mata Kuliah ({selectedSubjects.length} dipilih)
                 </Text>
-                <Text style={styles.sectionHint}>Pilih yang kamu kuasai atau ingin pelajari</Text>
+                <Text style={styles.sectionHint}>Pilih mata kuliah yang kamu kuasai atau ingin pelajari</Text>
                 <View style={styles.subjectGrid}>
                   {SUBJECTS.map(subject => (
                     <TouchableOpacity
@@ -384,6 +389,7 @@ const styles = StyleSheet.create({
   errorText: { fontFamily: Fonts.regular, fontSize: 12, color: Colors.error, marginTop: 4, marginLeft: 4 },
   sectionLabel: { fontFamily: Fonts.semiBold, fontSize: 14, color: Colors.textPrimary, marginBottom: 8 },
   sectionHint: { fontFamily: Fonts.regular, fontSize: 12, color: Colors.textMuted, marginBottom: 12, marginTop: -6 },
+  quickUnivHint: { fontFamily: Fonts.medium, fontSize: 12, color: Colors.textMuted, marginBottom: 6, marginTop: -2 },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 4 },
   chip: {
     paddingHorizontal: 16, paddingVertical: 8, borderRadius: BorderRadius.full,

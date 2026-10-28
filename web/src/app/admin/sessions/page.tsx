@@ -87,7 +87,7 @@ export default async function SessionsPage() {
           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 800 }}>
             <thead>
               <tr style={{ background: 'rgba(205,79,117,0.05)' }}>
-                {['Judul', 'Mata Pelajaran', 'Organizer', 'Partner', 'Jadwal', 'Durasi', 'Status'].map(h => (
+                {['Judul', 'Mata Kuliah', 'Organizer', 'Partner', 'Jadwal', 'Durasi', 'Status'].map(h => (
                   <th key={h} style={{
                     textAlign: 'left', padding: '13px 16px', fontSize: 11, color: '#9ca3af',
                     fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em',
@@ -112,6 +112,19 @@ export default async function SessionsPage() {
                   </td>
                   <td style={{ padding: '13px 16px', fontSize: 13, color: '#1a1a2e' }}>
                     {s.partner?.full_name || '—'}
+                    {s.partner_ids && s.partner_ids.length > 1 && (
+                      <span style={{
+                        fontSize: 11,
+                        background: 'rgba(205,79,117,0.12)',
+                        color: '#cd4f75',
+                        marginLeft: 6,
+                        padding: '2px 6px',
+                        borderRadius: 6,
+                        fontWeight: 700,
+                      }}>
+                        +{s.partner_ids.length - 1} lainnya
+                      </span>
+                    )}
                   </td>
                   <td style={{ padding: '13px 16px', fontSize: 13, color: '#6b7280', whiteSpace: 'nowrap' }}>
                     {s.scheduled_at

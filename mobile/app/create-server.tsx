@@ -268,7 +268,7 @@ export default function CreateServerScreen() {
                         {item.full_name || 'Pengguna'}
                       </Text>
                       <Text style={styles.memberUser} numberOfLines={1}>
-                        @{item.username || 'user'} • 🎓 {item.grade_level || 'Perkuliahan'}
+                        @{item.username || 'user'}{item.university ? ` • 🏛️ ${item.university}` : ''}
                       </Text>
                     </View>
                     <View style={[styles.checkCircle, isSelected && styles.checkCircleActive]}>

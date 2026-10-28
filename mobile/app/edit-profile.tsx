@@ -9,7 +9,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Colors, Fonts, BorderRadius, Spacing, Shadow } from '../constants/theme';
 import { getCurrentUser, getProfile, updateProfile } from '../lib/api';
-import { Profile, SUBJECTS, GRADE_LEVELS, STUDY_STYLES, UNIVERSITIES } from '../types';
+import { Profile, SUBJECTS, STUDY_STYLES, UNIVERSITIES } from '../types';
 import { MBTI_TYPES } from '../constants/mbti';
 
 export default function EditProfileScreen() {
@@ -23,7 +23,6 @@ export default function EditProfileScreen() {
   const [bio, setBio] = useState('');
   const [location, setLocation] = useState('');
   const [university, setUniversity] = useState('');
-  const [gradeLevel, setGradeLevel] = useState<Profile['grade_level']>(null);
   const [studyStyle, setStudyStyle] = useState<Profile['study_style']>(null);
   const [mbti, setMbti] = useState<string | null>(null);
   const [subjects, setSubjects] = useState<string[]>([]);
@@ -44,7 +43,6 @@ export default function EditProfileScreen() {
         setBio(p.bio || '');
         setLocation(p.location || '');
         setUniversity(p.university || '');
-        setGradeLevel(p.grade_level === 'Kuliah' ? 'Perkuliahan' : (p.grade_level || 'Perkuliahan'));
         setStudyStyle(p.study_style);
         setMbti(p.mbti || null);
         setSubjects(p.subjects || []);
@@ -62,7 +60,7 @@ export default function EditProfileScreen() {
     if (username && !/^[a-z0-9_.]{3,20}$/.test(username)) {
       e.username = '3–20 karakter: huruf kecil, angka, _ atau .';
     }
-    if (subjects.length === 0) e.subjects = 'Pilih minimal 1 mata pelajaran';
+    if (subjects.length === 0) e.subjects = 'Pilih minimal 1 mata kuliah';
     setErrors(e);
     return Object.keys(e).length === 0;
   };
@@ -76,7 +74,7 @@ export default function EditProfileScreen() {
       bio: bio.trim() || null,
       location: location.trim() || null,
       university: university.trim() || null,
-      grade_level: gradeLevel,
+      grade_level: 'Perkuliahan',
       study_style: studyStyle,
       mbti: mbti || null,
       subjects,
@@ -143,15 +141,6 @@ export default function EditProfileScreen() {
             </View>
 
             <View style={styles.card}>
-              <Text style={styles.label}>Jenjang Pendidikan</Text>
-              <View style={styles.wrapRow}>
-                {GRADE_LEVELS.map(g => (
-                  <TouchableOpacity key={g} style={[styles.chip, gradeLevel === g && styles.chipActive]} onPress={() => setGradeLevel(g)}>
-                    <Text style={[styles.chipText, gradeLevel === g && styles.textActive]}>{g}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
               <Text style={styles.label}>Gaya Belajar</Text>
               {STUDY_STYLES.map(s => {
                 const active = studyStyle === s.value;
@@ -292,7 +281,7 @@ export default function EditProfileScreen() {
             </View>
 
             <View style={styles.card}>
-              <Text style={styles.label}>Mata Pelajaran * <Text style={styles.labelHint}>({subjects.length} dipilih)</Text></Text>
+              <Text style={styles.label}>Mata Kuliah * <Text style={styles.labelHint}>({subjects.length} dipilih)</Text></Text>
               <View style={styles.wrapRow}>
                 {SUBJECTS.map(s => {
                   const active = subjects.includes(s);

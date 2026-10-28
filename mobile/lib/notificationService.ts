@@ -1,5 +1,6 @@
 import { Platform, Vibration } from 'react-native';
 import * as Notifications from 'expo-notifications';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
 import { supabase } from './supabase';
 
 export interface InAppNotification {
@@ -17,7 +18,6 @@ const listeners = new Set<NotificationListener>();
 try {
   Notifications.setNotificationHandler({
     handleNotification: async () => ({
-      shouldShowAlert: true,
       shouldPlaySound: true,
       shouldSetBadge: true,
       shouldShowBanner: true,
@@ -80,8 +80,27 @@ export async function registerForPushNotificationsAsync(userId?: string): Promis
       return null;
     }
 
+    // Di Expo Go Android (SDK 53+), remote push notifications ditiadakan oleh tim Expo
+    // Gunakan in-app banner & Realtime broadcast saat di Expo Go, dan token push pada standalone build / APK
+    const isExpoGo =
+      Constants.executionEnvironment === ExecutionEnvironment.StoreClient ||
+      (Constants as any).appOwnership === 'expo';
+
+    if (isExpoGo && Platform.OS === 'android') {
+      console.log(
+        '[Notifications] Berjalan di Expo Go (SDK 53+): Notifikasi remote ditangani lewat In-App Banner & Realtime. Gunakan EAS Build / APK untuk notifikasi background.'
+      );
+      return null;
+    }
+
     try {
-      const pushTokenData = await Notifications.getExpoPushTokenAsync();
+      const projectId =
+        Constants?.expoConfig?.extra?.eas?.projectId ??
+        Constants?.easConfig?.projectId;
+
+      const pushTokenData = await Notifications.getExpoPushTokenAsync(
+        projectId ? { projectId } : undefined
+      );
       token = pushTokenData.data;
       if (token && userId) {
         await supabase
@@ -91,7 +110,7 @@ export async function registerForPushNotificationsAsync(userId?: string): Promis
         console.log('[Notifications] Push token berhasil didaftarkan:', token);
       }
     } catch (e) {
-      console.log('[Notifications] Info token push (berjalan di emulator/Expo Go):', e);
+      console.log('[Notifications] Info token push:', e);
     }
   }
 
@@ -160,7 +179,7 @@ export function setupNotificationResponseListener() {
       } else if (data?.server_id) {
         router.push(`/server-chat/${data.server_id}`);
       } else if (data?.session_id) {
-        router.push('/(tabs)/schedule');
+        router.push(`/session/${data.session_id}`);
       } else if (data?.matched_user_id) {
         router.push('/(tabs)/matches');
       } else {

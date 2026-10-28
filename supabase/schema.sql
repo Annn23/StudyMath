@@ -175,10 +175,11 @@ CREATE POLICY "Users can create matches"
   TO authenticated
   WITH CHECK (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can update their own matches" ON matches;
 CREATE POLICY "Users can update their own matches"
   ON matches FOR UPDATE
   TO authenticated
-  USING (auth.uid() = user_id);
+  USING (auth.uid() = user_id OR auth.uid() = target_user_id);
 
 -- Conversations: participants can view, insert, and update
 CREATE POLICY "Conversation participants can view"
@@ -274,13 +275,14 @@ CREATE OR REPLACE FUNCTION handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
   INSERT INTO public.profiles (
-    id, full_name, avatar_url, grade_level, study_style, location, subjects, bio, is_available
+    id, full_name, avatar_url, grade_level, university, study_style, location, subjects, bio, is_available
   )
   VALUES (
     NEW.id,
     COALESCE(NEW.raw_user_meta_data->>'full_name', ''),
     NEW.raw_user_meta_data->>'avatar_url',
-    NEW.raw_user_meta_data->>'grade_level',
+    COALESCE(NEW.raw_user_meta_data->>'grade_level', 'Perkuliahan'),
+    NEW.raw_user_meta_data->>'university',
     NEW.raw_user_meta_data->>'study_style',
     NEW.raw_user_meta_data->>'location',
     CASE
@@ -293,7 +295,8 @@ BEGIN
   )
   ON CONFLICT (id) DO UPDATE SET
     full_name = EXCLUDED.full_name,
-    grade_level = COALESCE(EXCLUDED.grade_level, profiles.grade_level),
+    grade_level = COALESCE(EXCLUDED.grade_level, profiles.grade_level, 'Perkuliahan'),
+    university = COALESCE(EXCLUDED.university, profiles.university),
     study_style = COALESCE(EXCLUDED.study_style, profiles.study_style),
     location = COALESCE(EXCLUDED.location, profiles.location),
     subjects = CASE WHEN EXCLUDED.subjects <> '{}' THEN EXCLUDED.subjects ELSE profiles.subjects END,
@@ -327,7 +330,20 @@ DECLARE
   reverse_match matches%ROWTYPE;
   user_a profiles%ROWTYPE;
   user_b profiles%ROWTYPE;
+  existing_conv_id UUID;
 BEGIN
+  -- 1. Anti-rekursi: hentikan jika trigger dipanggil secara bersarang (kedalaman > 1)
+  IF pg_trigger_depth() > 1 THEN
+    RETURN NEW;
+  END IF;
+
+  -- 2. Jika operasi UPDATE tapi kolom action tidak berubah dan sudah matched, abaikan
+  IF TG_OP = 'UPDATE' THEN
+    IF OLD.action = NEW.action AND OLD.is_matched = NEW.is_matched THEN
+      RETURN NEW;
+    END IF;
+  END IF;
+
   -- Data user pemrakarsa dan target
   SELECT * INTO user_a FROM profiles WHERE id = NEW.user_id;
   SELECT * INTO user_b FROM profiles WHERE id = NEW.target_user_id;
@@ -340,44 +356,68 @@ BEGIN
     AND action IN ('like', 'super_like');
 
   IF FOUND THEN
-    -- Match terjadi! Update kedua baris match menjadi true
-    UPDATE matches SET is_matched = TRUE
-    WHERE (user_id = NEW.user_id AND target_user_id = NEW.target_user_id)
-       OR (user_id = NEW.target_user_id AND target_user_id = NEW.user_id);
+    -- Match terjadi! Update kedua baris match menjadi true hanya jika belum true
+    UPDATE matches 
+    SET is_matched = TRUE
+    WHERE ((user_id = NEW.user_id AND target_user_id = NEW.target_user_id)
+       OR (user_id = NEW.target_user_id AND target_user_id = NEW.user_id))
+      AND is_matched IS NOT TRUE;
 
-    -- Buat obrolan conversation baru
-    INSERT INTO conversations (participant_1, participant_2)
-    VALUES (NEW.user_id, NEW.target_user_id)
-    ON CONFLICT DO NOTHING;
+    -- Cek apakah sudah ada conversation sebelumnya agar tidak duplikat
+    SELECT id INTO existing_conv_id
+    FROM conversations
+    WHERE (participant_1 = NEW.user_id AND participant_2 = NEW.target_user_id)
+       OR (participant_1 = NEW.target_user_id AND participant_2 = NEW.user_id)
+    LIMIT 1;
 
-    -- Kirim notifikasi Match ke kedua belah pihak dengan nama asli
-    INSERT INTO notifications (user_id, type, title, body, data)
-    VALUES
-      (
-        NEW.user_id,
-        'match',
-        'Kalian Match! 🎉',
-        'Kamu dan ' || COALESCE(user_b.full_name, 'teman belajarmu') || ' saling menyukai!',
-        json_build_object('matched_user_id', NEW.target_user_id)
-      ),
-      (
-        NEW.target_user_id,
-        'match',
-        'Kalian Match! 🎉',
-        'Kamu dan ' || COALESCE(user_a.full_name, 'teman belajarmu') || ' saling menyukai!',
-        json_build_object('matched_user_id', NEW.user_id)
-      );
+    IF existing_conv_id IS NULL THEN
+      -- Buat obrolan conversation baru
+      INSERT INTO conversations (participant_1, participant_2)
+      VALUES (NEW.user_id, NEW.target_user_id);
+    END IF;
+
+    -- Kirim notifikasi Match ke kedua belah pihak jika belum ada notifikasi serupa baru-baru ini
+    IF NOT EXISTS (
+      SELECT 1 FROM notifications 
+      WHERE user_id = NEW.user_id 
+        AND type = 'match' 
+        AND (data->>'matched_user_id')::text = NEW.target_user_id::text
+    ) THEN
+      INSERT INTO notifications (user_id, type, title, body, data)
+      VALUES
+        (
+          NEW.user_id,
+          'match',
+          'Kalian Match! 🎉',
+          'Kamu dan ' || COALESCE(user_b.full_name, 'teman belajarmu') || ' saling menyukai!',
+          json_build_object('matched_user_id', NEW.target_user_id)
+        ),
+        (
+          NEW.target_user_id,
+          'match',
+          'Kalian Match! 🎉',
+          'Kamu dan ' || COALESCE(user_a.full_name, 'teman belajarmu') || ' saling menyukai!',
+          json_build_object('matched_user_id', NEW.user_id)
+        );
+    END IF;
   ELSE
     -- Belum match, tapi user_a baru saja menyapa/like user_b
     IF NEW.action IN ('like', 'super_like') THEN
-      INSERT INTO notifications (user_id, type, title, body, data)
-      VALUES (
-        NEW.target_user_id,
-        'match',
-        'Seseorang Menyukai Profilmu! 💞',
-        COALESCE(user_a.full_name, 'Seseorang') || ' menyapamu dan ingin belajar bersama!',
-        json_build_object('matched_user_id', NEW.user_id)
-      );
+      IF NOT EXISTS (
+        SELECT 1 FROM notifications
+        WHERE user_id = NEW.target_user_id
+          AND type = 'match'
+          AND (data->>'matched_user_id')::text = NEW.user_id::text
+      ) THEN
+        INSERT INTO notifications (user_id, type, title, body, data)
+        VALUES (
+          NEW.target_user_id,
+          'match',
+          'Seseorang Menyukai Profilmu! 💞',
+          COALESCE(user_a.full_name, 'Seseorang') || ' menyapamu dan ingin belajar bersama!',
+          json_build_object('matched_user_id', NEW.user_id)
+        );
+      END IF;
     END IF;
   END IF;
 
@@ -387,7 +427,7 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 DROP TRIGGER IF EXISTS on_new_match ON matches;
 CREATE TRIGGER on_new_match
-  AFTER INSERT OR UPDATE ON matches
+  AFTER INSERT OR UPDATE OF action ON matches
   FOR EACH ROW
   WHEN (NEW.action IN ('like', 'super_like'))
   EXECUTE FUNCTION handle_new_match();
@@ -547,7 +587,7 @@ CREATE TABLE IF NOT EXISTS active_calls (
   receiver_id UUID REFERENCES profiles(id) ON DELETE CASCADE,
   room_name TEXT NOT NULL,
   call_type TEXT NOT NULL CHECK (call_type IN ('video', 'voice')),
-  status TEXT NOT NULL DEFAULT 'calling' CHECK (status IN ('calling', 'ringing', 'accepted', 'rejected', 'ended')),
+  status TEXT NOT NULL DEFAULT 'calling' CHECK (status IN ('calling', 'ringing', 'accepted', 'rejected', 'ended', 'timeout')),
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -871,11 +911,126 @@ CREATE POLICY "Authenticated users can update chat attachments"
   TO authenticated, anon
   USING (bucket_id IN ('chat-attachments', 'avatars'));
 
+-- ===========================
+-- UNIFORM GRADE LEVEL ('Perkuliahan')
+-- ===========================
+UPDATE profiles SET grade_level = 'Perkuliahan' WHERE grade_level IS NULL OR grade_level IN ('Kuliah', 'SD', 'SMP', 'SMA', 'Umum');
 
+-- ===========================
+-- STUDY PARTNERS / MATCHES MIGRATION
+-- Update existing matches to is_matched = TRUE so past invitations are immediately connected
+-- ===========================
+UPDATE matches SET is_matched = TRUE WHERE action IN ('like', 'super_like') AND is_matched IS NOT TRUE;
 
+-- ===========================
+-- MULTI-PARTNER STUDY SESSIONS EXTENSION
+-- Memungkinkan sesi belajar memiliki lebih dari 2 orang (organizer + banyak partner)
+-- ===========================
+ALTER TABLE study_sessions ADD COLUMN IF NOT EXISTS partner_ids UUID[] DEFAULT '{}';
 
+CREATE TABLE IF NOT EXISTS session_participants (
+  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  session_id UUID REFERENCES study_sessions(id) ON DELETE CASCADE NOT NULL,
+  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  role TEXT DEFAULT 'participant' CHECK (role IN ('organizer', 'participant')),
+  status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'declined')),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(session_id, user_id)
+);
 
+-- Enable RLS & Table Grants
+ALTER TABLE session_participants ENABLE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT, UPDATE, DELETE ON session_participants TO authenticated;
+GRANT SELECT ON session_participants TO anon;
 
+DROP POLICY IF EXISTS "Session participants can view members" ON session_participants;
+CREATE POLICY "Session participants can view members"
+  ON session_participants FOR SELECT
+  TO authenticated
+  USING (true);
 
+DROP POLICY IF EXISTS "Users can insert session participants" ON session_participants;
+CREATE POLICY "Users can insert session participants"
+  ON session_participants FOR INSERT
+  TO authenticated
+  WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Participants or organizer can update member status" ON session_participants;
+CREATE POLICY "Participants or organizer can update member status"
+  ON session_participants FOR UPDATE
+  TO authenticated
+  USING (
+    auth.uid() = user_id OR
+    auth.uid() IN (SELECT organizer_id FROM study_sessions WHERE id = session_id)
+  );
+
+-- Perbarui kebijakan RLS study_sessions agar peserta grup bisa melihat & memperbarui sesi
+DROP POLICY IF EXISTS "Session participants can view" ON study_sessions;
+CREATE POLICY "Session participants can view"
+  ON study_sessions FOR SELECT
+  TO authenticated
+  USING (
+    auth.uid() = organizer_id 
+    OR auth.uid() = partner_id 
+    OR (partner_ids IS NOT NULL AND auth.uid() = ANY(partner_ids))
+    OR EXISTS (SELECT 1 FROM session_participants sp WHERE sp.session_id = study_sessions.id AND sp.user_id = auth.uid())
+  );
+
+DROP POLICY IF EXISTS "Organizer can update sessions" ON study_sessions;
+CREATE POLICY "Organizer can update sessions"
+  ON study_sessions FOR UPDATE
+  TO authenticated
+  USING (
+    auth.uid() = organizer_id 
+    OR auth.uid() = partner_id 
+    OR (partner_ids IS NOT NULL AND auth.uid() = ANY(partner_ids))
+    OR EXISTS (SELECT 1 FROM session_participants sp WHERE sp.session_id = study_sessions.id AND sp.user_id = auth.uid())
+  );
+
+-- Trigger auto notifikasi untuk multi-partner
+CREATE OR REPLACE FUNCTION handle_new_session_notification()
+RETURNS TRIGGER AS $$
+DECLARE
+  organizer_prof profiles%ROWTYPE;
+  target_partner_id UUID;
+BEGIN
+  SELECT * INTO organizer_prof FROM profiles WHERE id = NEW.organizer_id;
+
+  -- Jika partner_ids memiliki daftar partner, kirim notifikasi ke seluruh partner
+  IF NEW.partner_ids IS NOT NULL AND array_length(NEW.partner_ids, 1) > 0 THEN
+    FOREACH target_partner_id IN ARRAY NEW.partner_ids LOOP
+      INSERT INTO notifications (user_id, type, title, body, data)
+      VALUES (
+        target_partner_id,
+        'session_invite',
+        'Undangan Sesi Belajar Baru 📅',
+        COALESCE(organizer_prof.full_name, 'Partner') || ' mengajakmu belajar bersama: ' || NEW.title,
+        json_build_object('session_id', NEW.id, 'organizer_id', NEW.organizer_id)
+      );
+    END LOOP;
+  ELSIF NEW.partner_id IS NOT NULL THEN
+    INSERT INTO notifications (user_id, type, title, body, data)
+    VALUES (
+      NEW.partner_id,
+      'session_invite',
+      'Undangan Sesi Belajar Baru 📅',
+      COALESCE(organizer_prof.full_name, 'Partner') || ' mengajakmu belajar: ' || NEW.title,
+      json_build_object('session_id', NEW.id, 'organizer_id', NEW.organizer_id)
+    );
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Realtime publication untuk session_participants
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'session_participants'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE session_participants;
+  END IF;
+END $$;
 

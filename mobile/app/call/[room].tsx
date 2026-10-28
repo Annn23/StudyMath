@@ -1,6 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Animated, Alert,
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  ActivityIndicator,
+  Animated,
+  Platform,
+  PermissionsAndroid,
+  Alert,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { WebView } from 'react-native-webview';
@@ -10,8 +18,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams, router } from 'expo-router';
 import { Colors, Fonts, BorderRadius } from '../../constants/theme';
 import {
-  buildCallUrl, CallType, CallStatus, listenToCallRoom, updateCallStatus,
+  CallType,
+  CallStatus,
+  listenToCallRoom,
+  updateCallStatus,
 } from '../../lib/call';
+import { getWebRtcHtml } from '../../lib/webrtcHtml';
 
 export default function CallScreen() {
   const insets = useSafeAreaInsets();
@@ -28,41 +40,100 @@ export default function CallScreen() {
   const callType: CallType = type === 'voice' ? 'voice' : 'video';
   const isCaller = role === 'caller';
 
-  // Pemanggil mulai dengan 'calling'. Penerima / yang gabung langsung 'accepted'
+  // State status panggilan
   const [callStatus, setCallStatus] = useState<CallStatus>(isCaller ? 'calling' : 'accepted');
-  const [webViewLoading, setWebViewLoading] = useState(true);
-  const [seconds, setSeconds] = useState(0);
+  const [enteredRoom, setEnteredRoom] = useState<boolean>(!isCaller);
+  const [permissionsReady, setPermissionsReady] = useState<boolean>(true);
+  const [micGranted, setMicGranted] = useState<boolean>(true);
   const pulse = useRef(new Animated.Value(1)).current;
+  const webViewRef = useRef<WebView>(null);
 
-  const url = buildCallUrl(room, callType, me || 'Pengguna StudyMatch');
   const partnerName = name || 'Partner';
-  const partnerAvatar = avatar ||
-    `https://ui-avatars.com/api/?name=${encodeURIComponent(partnerName)}&background=cd4f75&color=fff&size=300`;
+  const partnerAvatar =
+    avatar ||
+    `https://ui-avatars.com/api/?name=${encodeURIComponent(
+      partnerName
+    )}&background=cd4f75&color=fff&size=300`;
+
+  // HTML WebRTC engine berbasis PeerJS mandiri
+  const webrtcHtml = getWebRtcHtml({
+    room,
+    type: callType,
+    role: role || (isCaller ? 'caller' : 'receiver'),
+    myName: me || 'Pengguna StudyMatch',
+    partnerName,
+    partnerAvatar,
+  });
+
+  // Minta izin mikrofon & kamera secara eksplisit di Android saat layar dibuka
+  useEffect(() => {
+    let mounted = true;
+    const requestHardwarePermissions = async () => {
+      if (Platform.OS === 'android') {
+        try {
+          const perms: any[] = [PermissionsAndroid.PERMISSIONS.RECORD_AUDIO];
+          if (callType === 'video') {
+            perms.push(PermissionsAndroid.PERMISSIONS.CAMERA);
+          }
+
+          const results = await PermissionsAndroid.requestMultiple(perms);
+          const audioOk =
+            results[PermissionsAndroid.PERMISSIONS.RECORD_AUDIO] ===
+            PermissionsAndroid.RESULTS.GRANTED;
+
+          if (mounted) {
+            setMicGranted(audioOk);
+            if (!audioOk) {
+              Alert.alert(
+                'Izin Mikrofon Dibutuhkan 🎤',
+                'Aplikasi memerlukan izin mikrofon agar suaramu dapat didengar saat berbicara di telepon.',
+                [{ text: 'OK' }]
+              );
+            }
+          }
+        } catch (err) {
+          console.warn('[CallScreen] Permission request error:', err);
+        }
+      }
+    };
+
+    requestHardwarePermissions();
+    return () => {
+      mounted = false;
+    };
+  }, [callType]);
 
   // Animasi berdenyut avatar saat menunggu diangkat
   useEffect(() => {
-    if (callStatus === 'accepted') return;
-    const loop = Animated.loop(Animated.sequence([
-      Animated.timing(pulse, { toValue: 1.15, duration: 800, useNativeDriver: true }),
-      Animated.timing(pulse, { toValue: 1, duration: 800, useNativeDriver: true }),
-    ]));
+    if (callStatus === 'accepted' || enteredRoom) return;
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 1.15, duration: 800, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 1, duration: 800, useNativeDriver: true }),
+      ])
+    );
     loop.start();
     return () => loop.stop();
-  }, [callStatus]);
+  }, [callStatus, enteredRoom]);
 
-  // Dengarkan sinyal status panggilan di room (calling -> ringing -> accepted/rejected/ended)
+  // Dengarkan sinyal status panggilan di room
   useEffect(() => {
     const unsub = listenToCallRoom(room, (status) => {
       setCallStatus(status);
 
-      if (status === 'rejected') {
+      if (status === 'accepted') {
+        setEnteredRoom(true);
+        // Buka audio lock saat panggilan diterima
+        (webViewRef.current as any)?.injectJavaScript(
+          'if (typeof unlockAudio === "function") { unlockAudio(); } true;'
+        );
+      } else if (status === 'rejected') {
         setTimeout(() => router.back(), 1800);
       } else if (status === 'timeout' || status === 'ended') {
         setTimeout(() => router.back(), 1500);
       }
     });
 
-    // Batas waktu pemanggil jika tidak ada respon sama sekali setelah 50 detik
     let callerTimeout: ReturnType<typeof setTimeout> | undefined;
     if (isCaller) {
       callerTimeout = setTimeout(() => {
@@ -78,17 +149,7 @@ export default function CallScreen() {
     };
   }, [room, isCaller, receiverId]);
 
-  // Durasi panggilan dihitung saat panggilan sudah diterima (accepted) dan WebView sudah siap
-  useEffect(() => {
-    if (callStatus !== 'accepted' || webViewLoading) return;
-    const t = setInterval(() => setSeconds(s => s + 1), 1000);
-    return () => clearInterval(t);
-  }, [callStatus, webViewLoading]);
-
-  const duration = `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
-
   const handleHangUp = () => {
-    // Beritahu server & lawan bahwa panggilan dibatalkan / ditutup
     updateCallStatus(room, 'ended', receiverId);
     router.back();
   };
@@ -100,9 +161,7 @@ export default function CallScreen() {
       case 'ringing':
         return 'Berdering…';
       case 'accepted':
-        return webViewLoading
-          ? (callType === 'video' ? '📹 Menghubungkan video…' : '📞 Menghubungkan suara…')
-          : '';
+        return 'Menghubungkan…';
       case 'rejected':
         return 'Panggilan ditolak ❌';
       case 'timeout':
@@ -114,43 +173,78 @@ export default function CallScreen() {
     }
   };
 
-  const isConnected = callStatus === 'accepted';
+  const showRingingView = !enteredRoom && callStatus !== 'accepted';
 
   return (
     <View style={styles.container}>
       <StatusBar style="light" />
 
-      {/* WebView WebRTC Jitsi HANYA dimuat dan ditampilkan ketika panggilan SUDAH diangkat (accepted) */}
-      {isConnected && (
-        <WebView
-          source={{ uri: url }}
-          style={styles.webview}
-          javaScriptEnabled
-          domStorageEnabled
-          allowsInlineMediaPlayback
-          mediaPlaybackRequiresUserAction={false}
-          mediaCapturePermissionGrantType="grant"
-          allowsFullscreenVideo
-          originWhitelist={['*']}
-          onLoadEnd={() => setWebViewLoading(false)}
-          onError={() =>
-            Alert.alert('Gagal', 'Tidak dapat terhubung ke server panggilan.', [
-              { text: 'OK', onPress: handleHangUp },
-            ])
-          }
-          onNavigationStateChange={(nav) => {
-            if (nav.url.includes('close') || nav.url.endsWith('/static/close.html')) {
-              handleHangUp();
-            }
-          }}
-        />
-      )}
+      {/* WebView WebRTC Room (hanya dimuat setelah izin mikrofon diperiksa) */}
+      <View style={styles.webviewWrap}>
+        {permissionsReady ? (
+          <WebView
+            ref={webViewRef as any}
+            source={{
+              html: webrtcHtml,
+              baseUrl: 'https://studymatch.app',
+            }}
+            style={styles.webview}
+            javaScriptEnabled
+            domStorageEnabled
+            allowsInlineMediaPlayback
+            mediaPlaybackRequiresUserAction={false}
+            mediaCapturePermissionGrantType="grant"
+            allowFileAccess={true}
+            allowFileAccessFromFileURLs={true}
+            allowUniversalAccessFromFileURLs={true}
+            mixedContentMode="always"
+            allowsFullscreenVideo
+            originWhitelist={['*']}
+            onLoadEnd={() => {
+              (webViewRef.current as any)?.injectJavaScript(
+                'if (typeof unlockAudio === "function") { unlockAudio(); } true;'
+              );
+            }}
+            onMessage={(event: any) => {
+              try {
+                const data = JSON.parse(event.nativeEvent.data);
+                if (data.type === 'HANGUP') {
+                  handleHangUp();
+                } else if (data.type === 'CONNECTED') {
+                  setCallStatus('accepted');
+                  setEnteredRoom(true);
+                  (webViewRef.current as any)?.injectJavaScript(
+                    'if (typeof unlockAudio === "function") { unlockAudio(); } true;'
+                  );
+                } else if (data.type === 'ERROR') {
+                  Alert.alert('Perhatian', data.message || 'Kendala pada sambungan audio.');
+                }
+              } catch {
+                // ignore
+              }
+            }}
+          />
+        ) : (
+          <View style={styles.centerLoading}>
+            <ActivityIndicator size="large" color={Colors.primary} />
+            <Text style={styles.loadingText}>Menyiapkan mikrofon & audio...</Text>
+          </View>
+        )}
+      </View>
 
-      {/* Layar "Memanggil / Berdering" ala WhatsApp selama lawan belum mengangkat */}
-      {(!isConnected || webViewLoading) && (
-        <LinearGradient colors={['#1f1b2e', '#3b1d33', '#111']} style={StyleSheet.absoluteFill}>
-          <View style={[styles.ringing, { paddingTop: insets.top + 60 }]}>
-            <Text style={styles.encrypt}>🔒 Panggilan terenkripsi end-to-end</Text>
+      {/* Layar "Memanggil / Berdering" saat pemanggil sedang menunggu */}
+      {showRingingView && (
+        <LinearGradient
+          colors={['#1f1b2e', '#3b1d33', '#111']}
+          style={StyleSheet.absoluteFill}
+        >
+          <View
+            style={[
+              styles.ringing,
+              { paddingTop: insets.top + 60, paddingBottom: insets.bottom + 40 },
+            ]}
+          >
+            <Text style={styles.encrypt}>🔒 Panggilan terenkripsi suara jernih</Text>
 
             <Animated.View style={{ transform: [{ scale: pulse }] }}>
               <Image source={{ uri: partnerAvatar }} style={styles.bigAvatar} contentFit="cover" />
@@ -166,42 +260,60 @@ export default function CallScreen() {
               {getStatusText()}
             </Text>
 
-            {/* Spinner hanya tampil saat memanggil atau menghubungkan */}
-            {(callStatus === 'calling' || callStatus === 'ringing' || (isConnected && webViewLoading)) && (
+            {/* Spinner saat memanggil */}
+            {(callStatus === 'calling' || callStatus === 'ringing') && (
               <ActivityIndicator color={Colors.secondary} style={{ marginTop: 24 }} size="small" />
             )}
+
+            <View style={{ flex: 1 }} />
+
+            {/* Tombol Masuk ke Ruangan Langsung */}
+            {isCaller && (
+              <TouchableOpacity
+                style={styles.directJoinBtn}
+                onPress={() => {
+                  setEnteredRoom(true);
+                  setCallStatus('accepted');
+                  webViewRef.current?.injectJavaScript(
+                    'if (typeof unlockAudio === "function") { unlockAudio(); } true;'
+                  );
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.directJoinText}>
+                  {callType === 'video' ? '📹 Buka Kamera & Masuk Room' : '📞 Buka Ruang Suara'}
+                </Text>
+              </TouchableOpacity>
+            )}
+
+            {/* Tombol Tutup Panggilan Merah */}
+            <TouchableOpacity style={styles.endBtn} onPress={handleHangUp} activeOpacity={0.85}>
+              <Text style={styles.endIcon}>📞</Text>
+            </TouchableOpacity>
+            <Text style={styles.endLabel}>Batalkan</Text>
           </View>
         </LinearGradient>
       )}
-
-      {/* Bar Atas: nama partner + durasi saat tersambung */}
-      {isConnected && !webViewLoading && (
-        <View style={[styles.topBar, { paddingTop: insets.top + 6 }]} pointerEvents="none">
-          <Text style={styles.topName} numberOfLines={1}>
-            {partnerName}
-          </Text>
-          <Text style={styles.topDuration}>
-            {callType === 'video' ? '📹' : '📞'} {duration}
-          </Text>
-        </View>
-      )}
-
-      {/* Tombol Tutup Panggilan Merah (Hang Up ala WhatsApp) */}
-      <View style={[styles.bottomBar, { paddingBottom: insets.bottom + 24 }]} pointerEvents="box-none">
-        <TouchableOpacity style={styles.endBtn} onPress={handleHangUp} activeOpacity={0.85}>
-          <Text style={styles.endIcon}>📞</Text>
-        </TouchableOpacity>
-        <Text style={styles.endLabel}>
-          {isConnected && !webViewLoading ? 'Akhiri' : 'Batalkan'}
-        </Text>
-      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#111' },
-  webview: { flex: 1, backgroundColor: '#111' },
+  container: { flex: 1, backgroundColor: '#0d0714' },
+  webviewWrap: { flex: 1, width: '100%', height: '100%' },
+  webview: { flex: 1, backgroundColor: '#0d0714' },
+  centerLoading: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#0d0714',
+  },
+  loadingText: {
+    marginTop: 14,
+    color: 'rgba(255, 255, 255, 0.75)',
+    fontSize: 14,
+    fontFamily: Fonts.medium,
+  },
   ringing: { flex: 1, alignItems: 'center' },
   encrypt: { color: 'rgba(255,255,255,0.6)', fontSize: 12, marginBottom: 40 },
   bigAvatar: {
@@ -228,23 +340,19 @@ const styles = StyleSheet.create({
     color: '#f87171',
     fontWeight: '700',
   },
-  topBar: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    alignItems: 'center',
-    paddingBottom: 8,
-    backgroundColor: 'rgba(0,0,0,0.45)',
+  directJoinBtn: {
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.35)',
+    paddingVertical: 12,
+    paddingHorizontal: 22,
+    borderRadius: 24,
+    marginBottom: 28,
   },
-  topName: { color: '#fff', fontSize: 15, fontWeight: '700', maxWidth: '80%' },
-  topDuration: { color: 'rgba(255,255,255,0.85)', fontSize: 12, marginTop: 2 },
-  bottomBar: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    alignItems: 'center',
+  directJoinText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
   },
   endBtn: {
     width: 68,

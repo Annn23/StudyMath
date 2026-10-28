@@ -29,13 +29,12 @@ import {
   getOrCreateConversation,
   getUnreadNotificationCount,
 } from '../../lib/api';
-import { Profile, SUBJECTS, GRADE_LEVELS, UNIVERSITIES } from '../../types';
+import { Profile, SUBJECTS, UNIVERSITIES } from '../../types';
 import { supabase } from '../../lib/supabase';
 
 const { width } = Dimensions.get('window');
 
 const ALL_SUBJECTS = ['Semua', ...SUBJECTS];
-const ALL_GRADES = ['Semua', ...GRADE_LEVELS];
 const POPULAR_UNIV_CHIPS = [
   'Semua Univ',
   'UI',
@@ -60,7 +59,6 @@ export default function HomeScreen() {
 
   // Search & Filter States
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedGrade, setSelectedGrade] = useState('Semua');
   const [selectedSubject, setSelectedSubject] = useState('Semua');
   const [selectedUniv, setSelectedUniv] = useState('Semua');
   const [onlyAvailable, setOnlyAvailable] = useState(false);
@@ -126,7 +124,7 @@ export default function HomeScreen() {
       setCurrentUser(profileData);
       setUnreadNotifs(notifCount);
 
-      await executeSearch(user.id, searchQuery, selectedGrade, selectedSubject, onlyAvailable, selectedUniv);
+      await executeSearch(user.id, searchQuery, selectedSubject, onlyAvailable, selectedUniv);
     } catch (e) {
       console.error('[loadInitialData] Error:', e);
     } finally {
@@ -138,7 +136,6 @@ export default function HomeScreen() {
   const executeSearch = async (
     userId: string,
     query: string,
-    grade: string,
     subject: string,
     availableOnly: boolean,
     univ: string = selectedUniv
@@ -146,7 +143,6 @@ export default function HomeScreen() {
     const results = await searchProfiles({
       currentUserId: userId,
       searchQuery: query,
-      gradeLevel: grade,
       subject: subject,
       university: univ !== 'Semua' && univ !== 'Semua Univ' ? univ : undefined,
       isAvailable: availableOnly ? true : undefined,
@@ -160,21 +156,14 @@ export default function HomeScreen() {
 
     if (searchTimer.current) clearTimeout(searchTimer.current);
     searchTimer.current = setTimeout(() => {
-      executeSearch(myUserId, text, selectedGrade, selectedSubject, onlyAvailable, selectedUniv);
+      executeSearch(myUserId, text, selectedSubject, onlyAvailable, selectedUniv);
     }, 280);
-  };
-
-  const handleSelectGrade = (grade: string) => {
-    setSelectedGrade(grade);
-    if (myUserId) {
-      executeSearch(myUserId, searchQuery, grade, selectedSubject, onlyAvailable, selectedUniv);
-    }
   };
 
   const handleSelectSubject = (subject: string) => {
     setSelectedSubject(subject);
     if (myUserId) {
-      executeSearch(myUserId, searchQuery, selectedGrade, subject, onlyAvailable, selectedUniv);
+      executeSearch(myUserId, searchQuery, subject, onlyAvailable, selectedUniv);
     }
   };
 
@@ -182,7 +171,7 @@ export default function HomeScreen() {
     const finalUniv = univ === 'Semua Univ' ? 'Semua' : univ;
     setSelectedUniv(finalUniv);
     if (myUserId) {
-      executeSearch(myUserId, searchQuery, selectedGrade, selectedSubject, onlyAvailable, finalUniv);
+      executeSearch(myUserId, searchQuery, selectedSubject, onlyAvailable, finalUniv);
     }
   };
 
@@ -190,7 +179,7 @@ export default function HomeScreen() {
     const nextVal = !onlyAvailable;
     setOnlyAvailable(nextVal);
     if (myUserId) {
-      executeSearch(myUserId, searchQuery, selectedGrade, selectedSubject, nextVal, selectedUniv);
+      executeSearch(myUserId, searchQuery, selectedSubject, nextVal, selectedUniv);
     }
   };
 
@@ -201,12 +190,11 @@ export default function HomeScreen() {
 
   const handleResetFilters = () => {
     setSearchQuery('');
-    setSelectedGrade('Semua');
     setSelectedSubject('Semua');
     setSelectedUniv('Semua');
     setOnlyAvailable(false);
     if (myUserId) {
-      executeSearch(myUserId, '', 'Semua', 'Semua', false, 'Semua');
+      executeSearch(myUserId, '', 'Semua', false, 'Semua');
     }
   };
 
@@ -219,12 +207,16 @@ export default function HomeScreen() {
 
       if (res?.data?.is_matched) {
         Alert.alert(
-          'Partner Ditemukan! 🎉',
-          `Kamu dan ${partner.full_name || 'teman belajarmu'} saling terhubung! Mau langsung mulai chat?`,
+          'Partner Belajar Terhubung! 🎉',
+          `Kamu dan ${partner.full_name || 'teman belajarmu'} sekarang sudah terhubung! Mau langsung jadwalkan sesi belajar atau chat?`,
           [
             { text: 'Nanti', style: 'cancel' },
             {
-              text: 'Chat Sekarang 💬',
+              text: 'Jadwalkan Sesi 📅',
+              onPress: () => router.push(`/new-session?partner=${partner.id}`),
+            },
+            {
+              text: 'Chat 💬',
               onPress: () => handleDirectChat(partner),
             },
           ]
@@ -262,7 +254,6 @@ export default function HomeScreen() {
 
   const hasActiveFilters =
     searchQuery.trim() !== '' ||
-    selectedGrade !== 'Semua' ||
     selectedSubject !== 'Semua' ||
     (selectedUniv !== 'Semua' && selectedUniv !== 'Semua Univ') ||
     onlyAvailable;
@@ -362,27 +353,6 @@ export default function HomeScreen() {
 
           <View style={styles.filterDivider} />
 
-          {/* Jenjang Filter Chips */}
-          {ALL_GRADES.map(grade => {
-            const isSelected = selectedGrade === grade;
-            return (
-              <TouchableOpacity
-                key={`grade-${grade}`}
-                style={[styles.filterChip, isSelected && styles.filterChipActive]}
-                onPress={() => handleSelectGrade(grade)}
-                activeOpacity={0.8}
-              >
-                <Text
-                  style={[styles.filterChipText, isSelected && styles.filterChipTextActive]}
-                >
-                  {grade === 'Semua' ? '🎓 Semua' : `🎓 ${grade}`}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-
-          <View style={styles.filterDivider} />
-
           {/* Subject Filter Chips */}
           {ALL_SUBJECTS.map(subj => {
             const isSelected = selectedSubject === subj;
@@ -396,7 +366,7 @@ export default function HomeScreen() {
                 <Text
                   style={[styles.filterChipText, isSelected && styles.filterChipTextActive]}
                 >
-                  {subj === 'Semua' ? '📚 Semua Mapel' : subj}
+                  {subj === 'Semua' ? '📚 Semua Matkul' : subj}
                 </Text>
               </TouchableOpacity>
             );
@@ -558,7 +528,7 @@ export default function HomeScreen() {
                       </Text>
                     </View>
 
-                    {/* Badges: Jenjang & Gaya Belajar */}
+                    {/* Badges: Univ & Gaya Belajar */}
                     <View style={styles.badgesRow}>
                       {item.university ? (
                         <View style={styles.univBadge}>
@@ -570,11 +540,6 @@ export default function HomeScreen() {
                       {item.location && (
                         <View style={styles.locationBadge}>
                           <Text style={styles.locationBadgeText}>📍 {item.location}</Text>
-                        </View>
-                      )}
-                      {item.grade_level && (
-                        <View style={styles.gradeBadge}>
-                          <Text style={styles.gradeBadgeText}>🎓 {item.grade_level}</Text>
                         </View>
                       )}
                       {item.mbti && (

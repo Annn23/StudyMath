@@ -140,7 +140,7 @@ export default function SettingsScreen() {
           <View style={styles.card}>
             <Row icon="📧" label="Email" sub={email} />
             <View style={styles.divider} />
-            <Row icon="✏️" label="Edit Profil" sub="Nama, bio, mapel, gaya belajar & MBTI" onPress={() => router.push('/edit-profile')} />
+            <Row icon="✏️" label="Edit Profil" sub="Nama, bio, matkul, gaya belajar & MBTI" onPress={() => router.push('/edit-profile')} />
             <View style={styles.divider} />
             <Row icon="🔒" label="Ubah Password" onPress={() => setShowPwd(v => !v)}
               right={<Text style={styles.chevron}>{showPwd ? '˅' : '›'}</Text>} />

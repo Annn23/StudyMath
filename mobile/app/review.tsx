@@ -130,8 +130,8 @@ export default function ReviewScreen() {
           <View style={styles.partnerCard}>
             <Image source={{ uri: avatarUri }} style={styles.avatar} contentFit="cover" />
             <Text style={styles.partnerName}>{partner?.full_name || partnerName || 'Partner Belajar'}</Text>
-            {partner?.grade_level && (
-              <Text style={styles.partnerGrade}>Jenjang: {partner.grade_level}</Text>
+            {partner?.university && (
+              <Text style={styles.partnerGrade}>🏛️ {partner.university}</Text>
             )}
             {sessionTitle && (
               <View style={styles.sessionBadge}>

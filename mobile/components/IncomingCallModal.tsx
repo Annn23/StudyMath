@@ -123,7 +123,14 @@ export default function IncomingCallModal() {
       }
     };
 
-    // onAuthStateChange secara otomatis mengirim INITIAL_SESSION saat start
+    // Inisialisasi session yang sudah aktif sekarang tanpa menunggu event auth berikutnya
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user?.id) {
+        handleUserChange(session.user.id);
+      }
+    });
+
+    // onAuthStateChange untuk mendeteksi perubahan login/logout selanjutnya
     const { data: authSub } = supabase.auth.onAuthStateChange((_event, session) => {
       handleUserChange(session?.user?.id || null);
     });

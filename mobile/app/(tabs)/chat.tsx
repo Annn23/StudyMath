@@ -295,7 +295,7 @@ export default function ChatScreen() {
           <Text style={styles.emptySubtitle}>
             {filterTab === 'groups'
               ? 'Buat server baru dan undang teman belajar untuk berdiskusi bersama!'
-              : 'Temukan partner belajarmu via username atau mapel, lalu mulai chat!'}
+              : 'Temukan partner belajarmu via username atau matkul, lalu mulai chat!'}
           </Text>
 
           {filterTab === 'groups' && (

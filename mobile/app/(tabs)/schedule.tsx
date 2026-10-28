@@ -42,6 +42,11 @@ export default function ScheduleScreen() {
     const partner = isOrganizer ? item.partner : item.organizer;
     const buttons: { text: string; style?: 'cancel' | 'destructive'; onPress?: () => void }[] = [];
 
+    buttons.push({
+      text: '📄 Buka Detail Sesi',
+      onPress: () => router.push(`/session/${item.id}`),
+    });
+
     if (item.meeting_link) {
       buttons.push({ text: '🔗 Buka Link Meeting', onPress: () => Linking.openURL(item.meeting_link!) });
     }
@@ -109,7 +114,8 @@ export default function ScheduleScreen() {
       <TouchableOpacity
         style={styles.sessionCard}
         activeOpacity={0.9}
-        onPress={() => openSessionActions(item)}
+        onPress={() => router.push(`/session/${item.id}`)}
+        onLongPress={() => openSessionActions(item)}
       >
         {/* Status Bar */}
         <View style={[styles.statusBar, { backgroundColor: STATUS_COLORS[item.status] }]} />

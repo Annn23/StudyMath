@@ -60,7 +60,7 @@ export default function InAppNotificationBanner() {
     if (data?.conversation_id) {
       router.push(`/chat-detail/${data.conversation_id}`);
     } else if (data?.session_id) {
-      router.push('/(tabs)/schedule');
+      router.push(`/session/${data.session_id}`);
     } else if (data?.matched_user_id) {
       router.push('/(tabs)/matches');
     } else {

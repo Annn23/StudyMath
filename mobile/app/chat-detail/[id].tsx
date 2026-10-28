@@ -230,7 +230,7 @@ export default function ChatDetailScreen() {
     ]).start();
   };
 
-  const openCall = (type: CallType, room: string, role: 'receiver' | 'joiner' = 'joiner') => {
+  const openCall = (type: CallType, room: string, role: 'caller' | 'receiver' | 'joiner' = 'receiver') => {
     const p = otherUserRef.current;
     router.push({
       pathname: '/call/[room]',
@@ -415,7 +415,7 @@ export default function ChatDetailScreen() {
                 </View>
                 <TouchableOpacity
                   style={[styles.callJoinBtn, isMe && styles.callJoinBtnMe]}
-                  onPress={() => openCall(call.type, call.room, 'joiner')}
+                  onPress={() => openCall(call.type, call.room, isMe ? 'caller' : 'receiver')}
                   activeOpacity={0.8}
                 >
                   <Text style={[styles.callJoinText, isMe && { color: Colors.primary }]}>Gabung</Text>

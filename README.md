@@ -70,8 +70,8 @@ npm run dev
 |---|---|
 | WelcomeScreen | Splash screen dengan animated gradient |
 | LoginScreen | Login dengan email & password |
-| RegisterScreen | Registrasi 3-langkah (data, profil, mapel) |
-| HomeScreen | Cari partner belajar via username atau filter mapel |
+| RegisterScreen | Registrasi 3-langkah (data, profil, matkul) |
+| HomeScreen | Cari partner belajar via username atau filter matkul |
 | MatchesScreen | Daftar teman belajar |
 | ChatScreen | Daftar percakapan |
 | ChatDetailScreen | Pesan realtime via Supabase |
