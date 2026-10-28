@@ -33,7 +33,8 @@
           "color": "#cd4f75"
         }
       ],
-      "expo-image"
+      "expo-image",
+      "expo-audio"
     ],
     "ios": {
       "supportsTablet": false,

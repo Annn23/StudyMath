@@ -7,13 +7,15 @@ import {
   ActivityIndicator,
   Animated,
   Platform,
-  PermissionsAndroid,
   Alert,
+  Linking,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { WebView } from 'react-native-webview';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Image } from 'expo-image';
+import { requestRecordingPermissionsAsync } from 'expo-audio';
+import { requestCameraPermissionsAsync } from 'expo-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams, router } from 'expo-router';
 import { Colors, Fonts, BorderRadius } from '../../constants/theme';
@@ -43,8 +45,9 @@ export default function CallScreen() {
   // State status panggilan
   const [callStatus, setCallStatus] = useState<CallStatus>(isCaller ? 'calling' : 'accepted');
   const [enteredRoom, setEnteredRoom] = useState<boolean>(!isCaller);
-  const [permissionsReady, setPermissionsReady] = useState<boolean>(true);
-  const [micGranted, setMicGranted] = useState<boolean>(true);
+  const [permissionsReady, setPermissionsReady] = useState(Platform.OS !== 'android');
+  const [micGranted, setMicGranted] = useState(Platform.OS !== 'android');
+  const [permissionAttempt, setPermissionAttempt] = useState(0);
   const pulse = useRef(new Animated.Value(1)).current;
   const webViewRef = useRef<WebView>(null);
 
@@ -70,16 +73,15 @@ export default function CallScreen() {
     let mounted = true;
     const requestHardwarePermissions = async () => {
       if (Platform.OS === 'android') {
+        setPermissionsReady(false);
+        setMicGranted(false);
         try {
-          const perms: any[] = [PermissionsAndroid.PERMISSIONS.RECORD_AUDIO];
-          if (callType === 'video') {
-            perms.push(PermissionsAndroid.PERMISSIONS.CAMERA);
+          // Expo Go scopes permissions to each project. Request through Expo so
+          // both the app and its WebView receive microphone access.
+          const { granted: audioOk } = await requestRecordingPermissionsAsync();
+          if (audioOk && callType === 'video') {
+            await requestCameraPermissionsAsync();
           }
-
-          const results = await PermissionsAndroid.requestMultiple(perms);
-          const audioOk =
-            results[PermissionsAndroid.PERMISSIONS.RECORD_AUDIO] ===
-            PermissionsAndroid.RESULTS.GRANTED;
 
           if (mounted) {
             setMicGranted(audioOk);
@@ -93,6 +95,8 @@ export default function CallScreen() {
           }
         } catch (err) {
           console.warn('[CallScreen] Permission request error:', err);
+        } finally {
+          if (mounted) setPermissionsReady(true);
         }
       }
     };
@@ -101,7 +105,7 @@ export default function CallScreen() {
     return () => {
       mounted = false;
     };
-  }, [callType]);
+  }, [callType, permissionAttempt]);
 
   // Animasi berdenyut avatar saat menunggu diangkat
   useEffect(() => {
@@ -173,7 +177,7 @@ export default function CallScreen() {
     }
   };
 
-  const showRingingView = !enteredRoom && callStatus !== 'accepted';
+  const showRingingView = permissionsReady && micGranted && !enteredRoom && callStatus !== 'accepted';
 
   return (
     <View style={styles.container}>
@@ -181,7 +185,7 @@ export default function CallScreen() {
 
       {/* WebView WebRTC Room (hanya dimuat setelah izin mikrofon diperiksa) */}
       <View style={styles.webviewWrap}>
-        {permissionsReady ? (
+        {permissionsReady && micGranted ? (
           <WebView
             ref={webViewRef as any}
             source={{
@@ -224,10 +228,26 @@ export default function CallScreen() {
               }
             }}
           />
-        ) : (
+        ) : !permissionsReady ? (
           <View style={styles.centerLoading}>
             <ActivityIndicator size="large" color={Colors.primary} />
             <Text style={styles.loadingText}>Menyiapkan mikrofon & audio...</Text>
+          </View>
+        ) : (
+          <View style={styles.centerLoading}>
+            <Text style={styles.loadingText}>Izinkan mikrofon agar suaramu dapat didengar.</Text>
+            <TouchableOpacity
+              style={styles.directJoinBtn}
+              onPress={() => setPermissionAttempt((attempt) => attempt + 1)}
+            >
+              <Text style={styles.directJoinText}>Coba lagi</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.directJoinBtn} onPress={() => Linking.openSettings()}>
+              <Text style={styles.directJoinText}>Buka pengaturan</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.endBtn} onPress={handleHangUp}>
+              <Text style={styles.endIcon}>📞</Text>
+            </TouchableOpacity>
           </View>
         )}
       </View>

@@ -50,6 +50,8 @@ npm install
 npx expo start
 ```
 
+> Catatan perbaikan mobile: [penyebab bug mikrofon Android, perubahan, dan hasil pengujian](docs/android-microphone-fix.md).
+
 ### 3. Setup Web Admin (Next.js)
 
 ```bash
