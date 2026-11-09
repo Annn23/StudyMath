@@ -91,17 +91,21 @@ export default function IncomingCallModal() {
             });
 
             // Jika notifikasi adalah panggilan masuk dan belum ada modal aktif
-            if (isCall && row.data?.room) {
+            if (isCall && (row.data?.room || row.data?.server_id)) {
+              const isGroup = !!row.data?.is_group_meet || !!row.data?.server_id;
               setCall({
                 id: row.id,
-                conversationId: row.data.conversation_id,
+                conversationId: row.data.conversation_id || row.data.server_id,
                 callerId: row.data.sender_id,
                 callerName: row.data.sender_name || 'Teman Belajar',
                 callerAvatar: row.data.sender_avatar,
                 receiverId: userId,
-                room: row.data.room,
+                room: row.data.room || `StudyServer_${(row.data.server_id || 'room').replace(/-/g, '').slice(0, 16)}`,
                 type: row.data.call_type === 'voice' ? 'voice' : 'video',
                 status: 'calling',
+                is_group_meet: isGroup,
+                server_id: row.data.server_id,
+                server_name: row.data.server_name,
               });
             }
           }
@@ -177,17 +181,34 @@ export default function IncomingCallModal() {
     const targetCall = call;
     setCall(null);
 
-    // Buka layar video/suara
-    router.push({
-      pathname: '/call/[room]',
-      params: {
-        room: targetCall.room,
-        type: targetCall.type,
-        name: targetCall.callerName,
-        avatar: targetCall.callerAvatar || '',
-        role: 'receiver',
-      },
-    });
+    // Buka layar video/suara sesuai tipe panggilan (Group Meet vs Private Call)
+    const isGroupCall =
+      !!targetCall.is_group_meet ||
+      !!targetCall.server_id ||
+      (typeof targetCall.room === 'string' && targetCall.room.startsWith('StudyServer_'));
+    const targetServerId =
+      targetCall.server_id || (isGroupCall ? targetCall.conversationId : undefined);
+
+    if (isGroupCall && targetServerId) {
+      router.push({
+        pathname: `/server-focus/${targetServerId}`,
+        params: {
+          type: targetCall.type,
+          name: targetCall.server_name || targetCall.callerName,
+        },
+      });
+    } else {
+      router.push({
+        pathname: '/call/[room]',
+        params: {
+          room: targetCall.room,
+          type: targetCall.type,
+          name: targetCall.callerName,
+          avatar: targetCall.callerAvatar || '',
+          role: 'receiver',
+        },
+      });
+    }
   };
 
   return (
@@ -198,7 +219,13 @@ export default function IncomingCallModal() {
         <View style={[styles.content, { paddingTop: insets.top + 50, paddingBottom: insets.bottom + 40 }]}>
           {/* Header Status */}
           <Text style={styles.badge}>
-            {call.type === 'video' ? '📹 Panggilan Video Masuk' : '📞 Panggilan Suara Masuk'}
+            {call.is_group_meet
+              ? call.type === 'voice'
+                ? '📞 Undangan Suara Server'
+                : '📹 Undangan Google Meet Server'
+              : call.type === 'video'
+              ? '📹 Panggilan Video Masuk'
+              : '📞 Panggilan Suara Masuk'}
           </Text>
 
           {/* Caller Avatar */}
@@ -207,7 +234,11 @@ export default function IncomingCallModal() {
               <Image source={{ uri: avatarUri }} style={styles.avatar} contentFit="cover" />
             </Animated.View>
             <Text style={styles.callerName}>{call.callerName}</Text>
-            <Text style={styles.subtext}>Menghubungi Anda…</Text>
+            <Text style={styles.subtext}>
+              {call.server_name
+                ? `Mengajakmu belajar di server "${call.server_name}"`
+                : 'Menghubungi Anda…'}
+            </Text>
           </View>
 
           {/* Tombol Aksi: Tolak & Angkat */}

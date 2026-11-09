@@ -143,7 +143,13 @@ export default function CallScreen() {
       callerTimeout = setTimeout(() => {
         setCallStatus('timeout');
         updateCallStatus(room, 'timeout', receiverId);
-        setTimeout(() => router.back(), 1500);
+        setTimeout(() => {
+          if (router.canGoBack()) {
+            router.back();
+          } else {
+            router.replace('/(tabs)/chat');
+          }
+        }, 1500);
       }, 50000);
     }
 
@@ -155,7 +161,11 @@ export default function CallScreen() {
 
   const handleHangUp = () => {
     updateCallStatus(room, 'ended', receiverId);
-    router.back();
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace('/(tabs)/chat');
+    }
   };
 
   const getStatusText = () => {

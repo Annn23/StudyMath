@@ -23,6 +23,7 @@ import {
   getProfile,
   getSessionById,
   updateSessionStatus,
+  updateMyParticipantStatus,
   notifySessionResponse,
   getOrCreateConversation,
 } from '../../lib/api';
@@ -151,6 +152,7 @@ export default function SessionDetailScreen() {
     setActionLoading(true);
     const { error } = await updateSessionStatus(session.id, 'confirmed');
     if (!error) {
+      await updateMyParticipantStatus(session.id, currentUser.id, 'confirmed');
       await notifySessionResponse(
         session.id,
         session.organizer_id,
@@ -180,6 +182,7 @@ export default function SessionDetailScreen() {
             setActionLoading(true);
             const { error } = await updateSessionStatus(session.id, 'cancelled');
             if (!error) {
+              await updateMyParticipantStatus(session.id, currentUser.id, 'declined');
               await notifySessionResponse(
                 session.id,
                 session.organizer_id,

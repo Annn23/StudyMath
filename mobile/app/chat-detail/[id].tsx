@@ -566,7 +566,7 @@ export default function ChatDetailScreen() {
         <View style={styles.center}><ActivityIndicator size="large" color={Colors.primary} /></View>
       ) : (
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior="padding"
           style={styles.flex}
           keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + 56 : 0}
         >
@@ -704,7 +704,7 @@ export default function ChatDetailScreen() {
         }}
       >
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior="padding"
           style={styles.previewScreenContainer}
         >
           {/* Header Preview */}

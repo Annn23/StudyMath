@@ -44,6 +44,7 @@ import {
   parseImageMessage,
   PickedMedia,
 } from '../../lib/chatMedia';
+import { sendGroupMeetInvite } from '../../lib/call';
 
 // Palet warna nama anggota seperti WhatsApp Group
 const SENDER_COLORS = [
@@ -475,17 +476,29 @@ export default function ServerChatScreen() {
               </Text>
             )}
 
-            {(item.content.includes('Focus Mode') || item.content.includes('Pomodoro')) && (
+            {(item.content.includes('Focus Mode') ||
+              item.content.includes('Pomodoro') ||
+              item.content.includes('Google Meet') ||
+              item.content.includes('Panggilan Suara') ||
+              item.content.includes('Panggilan Video') ||
+              item.content.includes('Meet Room')) && (
               <TouchableOpacity
                 style={styles.joinCallMsgBtn}
-                onPress={() =>
+                onPress={() => {
+                  const callType = item.content.includes('Panggilan Suara') ? 'voice' : 'video';
                   router.push(
-                    `/server-focus/${serverId}?type=video&name=${encodeURIComponent(server?.name || '')}`
-                  )
-                }
+                    `/server-focus/${serverId}?type=${callType}&name=${encodeURIComponent(server?.name || '')}`
+                  );
+                }}
                 activeOpacity={0.8}
               >
-                <Text style={styles.joinCallMsgBtnText}>Gabung Sesi Pomodoro 🍅📹</Text>
+                <Text style={styles.joinCallMsgBtnText}>
+                  {item.content.includes('Panggilan Suara')
+                    ? 'Gabung Panggilan Suara 📞'
+                    : item.content.includes('Pomodoro')
+                    ? 'Gabung Pomodoro & Meet 🍅📹'
+                    : 'Gabung Google Meet Room 📹'}
+                </Text>
               </TouchableOpacity>
             )}
 
@@ -511,7 +524,7 @@ export default function ServerChatScreen() {
   return (
     <KeyboardAvoidingView
       style={styles.keyboardRoot}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior="padding"
       keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
     >
       <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -525,7 +538,13 @@ export default function ServerChatScreen() {
         <View style={styles.header}>
           <TouchableOpacity
             style={styles.backBtn}
-            onPress={() => router.back()}
+            onPress={() => {
+              if (router.canGoBack()) {
+                router.back();
+              } else {
+                router.replace('/(tabs)/chat');
+              }
+            }}
             activeOpacity={0.7}
           >
             <Text style={styles.backArrow}>‹</Text>
@@ -557,11 +576,30 @@ export default function ServerChatScreen() {
           <View style={styles.headerActions}>
             <TouchableOpacity
               style={styles.actionBtn}
-              onPress={() =>
+              onPress={() => {
+                if (userId && serverId) {
+                  const sName = currentProfile?.full_name || 'Anggota';
+                  sendServerMessage(
+                    serverId,
+                    userId,
+                    `📞 ${sName} memulai Panggilan Suara Google Meet. Ketuk untuk gabung!`,
+                    sName
+                  ).catch(() => {});
+
+                  sendGroupMeetInvite({
+                    serverId,
+                    serverName: server?.name || 'Ruang Belajar',
+                    callerId: userId,
+                    callerName: sName,
+                    callerAvatar: currentProfile?.avatar_url || undefined,
+                    receiverUserIds: members.map((m) => m.user_id).filter((id) => id !== userId),
+                    type: 'voice',
+                  }).catch(() => {});
+                }
                 router.push(
                   `/server-focus/${serverId}?type=voice&name=${encodeURIComponent(server?.name || '')}`
-                )
-              }
+                );
+              }}
               activeOpacity={0.75}
             >
               <Text style={styles.actionBtnIcon}>📞</Text>
@@ -569,11 +607,30 @@ export default function ServerChatScreen() {
 
             <TouchableOpacity
               style={styles.actionBtn}
-              onPress={() =>
+              onPress={() => {
+                if (userId && serverId) {
+                  const sName = currentProfile?.full_name || 'Anggota';
+                  sendServerMessage(
+                    serverId,
+                    userId,
+                    `📹 ${sName} membuka Google Meet Room. Ketuk untuk gabung!`,
+                    sName
+                  ).catch(() => {});
+
+                  sendGroupMeetInvite({
+                    serverId,
+                    serverName: server?.name || 'Ruang Belajar',
+                    callerId: userId,
+                    callerName: sName,
+                    callerAvatar: currentProfile?.avatar_url || undefined,
+                    receiverUserIds: members.map((m) => m.user_id).filter((id) => id !== userId),
+                    type: 'video',
+                  }).catch(() => {});
+                }
                 router.push(
                   `/server-focus/${serverId}?type=video&name=${encodeURIComponent(server?.name || '')}`
-                )
-              }
+                );
+              }}
               activeOpacity={0.75}
             >
               <Text style={styles.actionBtnIcon}>📹</Text>
@@ -581,11 +638,30 @@ export default function ServerChatScreen() {
 
             <TouchableOpacity
               style={[styles.actionBtn, styles.pomodoroActionBtn]}
-              onPress={() =>
+              onPress={() => {
+                if (userId && serverId) {
+                  const sName = currentProfile?.full_name || 'Anggota';
+                  sendServerMessage(
+                    serverId,
+                    userId,
+                    `🍅 ${sName} memulai Sesi Pomodoro & Meet (25m). Ketuk untuk gabung!`,
+                    sName
+                  ).catch(() => {});
+
+                  sendGroupMeetInvite({
+                    serverId,
+                    serverName: server?.name || 'Ruang Belajar',
+                    callerId: userId,
+                    callerName: sName,
+                    callerAvatar: currentProfile?.avatar_url || undefined,
+                    receiverUserIds: members.map((m) => m.user_id).filter((id) => id !== userId),
+                    type: 'video',
+                  }).catch(() => {});
+                }
                 router.push(
                   `/server-focus/${serverId}?type=video&name=${encodeURIComponent(server?.name || '')}`
-                )
-              }
+                );
+              }}
               activeOpacity={0.75}
             >
               <Text style={styles.actionBtnIcon}>🍅</Text>
@@ -972,7 +1048,7 @@ export default function ServerChatScreen() {
           }}
         >
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            behavior="padding"
             style={styles.previewScreenContainer}
           >
             {/* Header Preview */}

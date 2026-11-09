@@ -740,6 +740,10 @@ export const createStudySession = async (
     partner_id: primaryPartnerId,
     partner_ids: pids,
   };
+  // Field relasi (hasil join) bukan kolom tabel study_sessions — buang agar insert tidak ditolak PostgREST
+  delete insertPayload.organizer;
+  delete insertPayload.partner;
+  delete insertPayload.participants;
 
   let { data, error } = await supabase
     .from('study_sessions')
@@ -823,6 +827,22 @@ export const updateSessionStatus = async (
     .select()
     .single();
   return { data, error };
+};
+
+export const updateMyParticipantStatus = async (
+  sessionId: string,
+  userId: string,
+  status: 'confirmed' | 'declined'
+) => {
+  try {
+    await supabase
+      .from('session_participants')
+      .update({ status })
+      .eq('session_id', sessionId)
+      .eq('user_id', userId);
+  } catch {
+    // Tabel session_participants opsional
+  }
 };
 
 export const notifySessionResponse = async (

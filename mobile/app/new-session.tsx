@@ -174,7 +174,7 @@ export default function NewSessionScreen() {
       {loading ? (
         <View style={styles.center}><ActivityIndicator size="large" color={Colors.primary} /></View>
       ) : (
-        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
           <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
             {/* Header Partner Section */}
             <View style={styles.partnerHeaderRow}>

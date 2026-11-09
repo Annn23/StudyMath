@@ -112,7 +112,7 @@ export default function EditProfileScreen() {
       {loading ? (
         <View style={styles.center}><ActivityIndicator size="large" color={Colors.primary} /></View>
       ) : (
-        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
           <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
             <View style={styles.card}>
               <Text style={styles.label}>Nama Lengkap *</Text>
@@ -312,7 +312,7 @@ export default function EditProfileScreen() {
         onRequestClose={() => setShowUnivModal(false)}
       >
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior="padding"
           style={styles.modalOverlay}
         >
           <View style={styles.modalContent}>

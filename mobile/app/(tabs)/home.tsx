@@ -663,7 +663,7 @@ export default function HomeScreen() {
         onRequestClose={() => setShowUnivModal(false)}
       >
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior="padding"
           style={styles.modalOverlay}
         >
           <View style={styles.modalContent}>

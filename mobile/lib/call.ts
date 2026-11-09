@@ -21,6 +21,9 @@ export interface CallSession {
   room: string;
   type: CallType;
   status: CallStatus;
+  is_group_meet?: boolean;
+  server_id?: string;
+  server_name?: string;
 }
 
 const CALL_REGEX = /^\[\[CALL:(video|voice):([A-Za-z0-9_-]+)\]\]$/;
@@ -119,14 +122,23 @@ export async function initiateCallSession(session: CallSession): Promise<string>
 
   // Kirim push notification ke HP penerima (muncul di status bar meskipun app di background)
   try {
+    const isGroup = !!session.is_group_meet || !!session.server_id;
     sendPushNotification(session.receiverId, {
-      title: session.type === 'video' ? `📹 ${session.callerName} memanggilmu` : `📞 ${session.callerName} memanggilmu`,
-      body: 'Panggilan masuk — ketuk untuk membuka',
+      title: session.type === 'video'
+        ? (isGroup ? `📹 ${session.callerName} memanggilmu ke Google Meet` : `📹 ${session.callerName} memanggilmu`)
+        : (isGroup ? `📞 ${session.callerName} memanggilmu ke Ruang Suara` : `📞 ${session.callerName} memanggilmu`),
+      body: isGroup
+        ? `Ayo gabung belajar di server "${session.server_name || 'Ruang Belajar'}"!`
+        : 'Panggilan masuk — ketuk untuk membuka',
       data: {
         room: session.room,
         call_type: session.type,
         conversation_id: session.conversationId,
         caller_id: session.callerId,
+        is_call: true,
+        is_group_meet: isGroup,
+        server_id: session.server_id,
+        server_name: session.server_name,
       },
       channelId: 'calls',
     });
@@ -134,7 +146,85 @@ export async function initiateCallSession(session: CallSession): Promise<string>
     // non-critical
   }
 
+  // Simpan record ke tabel notifications Supabase agar listener global_notifs juga menangkapnya
+  try {
+    const isGroup = !!session.is_group_meet || !!session.server_id;
+    await supabase.from('notifications').insert({
+      user_id: session.receiverId,
+      actor_id: session.callerId,
+      title: session.type === 'video'
+        ? (isGroup ? `📹 Undangan Google Meet: ${session.server_name || 'Server'}` : '📹 Panggilan Video Masuk')
+        : (isGroup ? `📞 Undangan Suara: ${session.server_name || 'Server'}` : '📞 Panggilan Suara Masuk'),
+      body: isGroup
+        ? `${session.callerName} mengajakmu belajar di "${session.server_name || 'Server'}". Ketuk untuk gabung!`
+        : `${session.callerName} sedang memanggilmu. Ketuk untuk membuka!`,
+      type: 'call_invite',
+      is_read: false,
+      data: {
+        is_call: true,
+        call_type: session.type,
+        is_group_meet: isGroup,
+        server_id: session.server_id,
+        server_name: session.server_name,
+        room: session.room,
+        sender_id: session.callerId,
+        sender_name: session.callerName,
+        sender_avatar: session.callerAvatar,
+      },
+    });
+  } catch {
+    // non-critical
+  }
+
   return callId;
+}
+
+/**
+ * Panggil beberapa atau seluruh anggota grup server ke ruang Google Meet bersama.
+ * Mengirim sinyal Realtime broadcast, insert notifikasi DB, dan push notification ke setiap anggota.
+ */
+export async function sendGroupMeetInvite(params: {
+  serverId: string;
+  serverName: string;
+  callerId: string;
+  callerName: string;
+  callerAvatar?: string;
+  receiverUserIds: string[];
+  type?: CallType;
+}): Promise<void> {
+  const {
+    serverId,
+    serverName,
+    callerId,
+    callerName,
+    callerAvatar,
+    receiverUserIds,
+    type = 'video',
+  } = params;
+
+  const room = `StudyServer_${serverId.replace(/[^a-zA-Z0-9]/g, '').slice(-16)}`;
+
+  const tasks = receiverUserIds.map(async (receiverId) => {
+    if (!receiverId || receiverId === callerId) return;
+
+    const session: CallSession = {
+      conversationId: serverId,
+      callerId,
+      callerName,
+      callerAvatar,
+      receiverId,
+      room,
+      type,
+      status: 'calling',
+      is_group_meet: true,
+      server_id: serverId,
+      server_name: serverName,
+    };
+
+    return initiateCallSession(session);
+  });
+
+  await Promise.allSettled(tasks);
 }
 
 /**
@@ -278,6 +368,9 @@ export function listenToIncomingCalls(
             .eq('id', row.caller_id)
             .single();
 
+          const isGroup =
+            typeof row.room_name === 'string' && row.room_name.startsWith('StudyServer_');
+
           onIncoming({
             id: row.id,
             conversationId: row.conversation_id,
@@ -288,6 +381,8 @@ export function listenToIncomingCalls(
             room: row.room_name,
             type: row.call_type,
             status: 'calling',
+            is_group_meet: isGroup,
+            server_id: isGroup ? row.conversation_id : undefined,
           });
         }
       }

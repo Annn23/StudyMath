@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -13,6 +13,7 @@ import {
   ScrollView,
   ActivityIndicator,
   Dimensions,
+  Linking,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -21,6 +22,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams, router } from 'expo-router';
 import { WebView } from 'react-native-webview';
 import Svg, { Rect, Path } from 'react-native-svg';
+import { requestRecordingPermissionsAsync } from 'expo-audio';
+import { requestCameraPermissionsAsync } from 'expo-image-picker';
 import { Colors, Fonts, BorderRadius, Shadow } from '../../constants/theme';
 import { supabase } from '../../lib/supabase';
 import {
@@ -32,7 +35,8 @@ import {
   searchUsersForGroup,
   addServerMembers,
 } from '../../lib/api';
-import { buildCallUrl, CallType } from '../../lib/call';
+import { buildCallUrl, CallType, initiateCallSession, sendGroupMeetInvite } from '../../lib/call';
+import { getGroupWebRtcHtml } from '../../lib/groupWebRtcHtml';
 import { StudyServer, ServerMember, Profile } from '../../types';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -71,10 +75,11 @@ function VideoCamIcon({ size = 38, color = '#ffffff' }: { size?: number; color?:
 
 export default function ServerFocusScreen() {
   const insets = useSafeAreaInsets();
-  const { id: serverId, type = 'video', name: serverNameParam } = useLocalSearchParams<{
+  const { id: serverId, type = 'video', name: serverNameParam, autostart } = useLocalSearchParams<{
     id: string;
     type?: CallType | 'pomodoro';
     name?: string;
+    autostart?: string;
   }>();
 
   const [server, setServer] = useState<StudyServer | null>(null);
@@ -103,13 +108,77 @@ export default function ServerFocusScreen() {
   // Call / WebRTC States
   const [isMicMuted, setIsMicMuted] = useState<boolean>(false);
   const [isCameraOff, setIsCameraOff] = useState<boolean>(false);
+  const [permissionsReady, setPermissionsReady] = useState(Platform.OS !== 'android');
+  const [micGranted, setMicGranted] = useState(Platform.OS !== 'android');
+  const [permissionAttempt, setPermissionAttempt] = useState(0);
+  const webViewRef = React.useRef<WebView>(null);
+  const channelRef = React.useRef<any>(null);
 
-  const roomName = `StudyServer_${(serverId || 'room').replace(/-/g, '').slice(0, 16)}`;
-  const callUrl = buildCallUrl(
-    roomName,
-    type === 'voice' ? 'voice' : 'video',
-    currentUser?.full_name || 'You'
-  );
+  // ID unik untuk WebRTC PeerJS di room server ini (menggunakan currentUser.id yang valid)
+  const cleanServerId = (serverId || 'room').replace(/[^a-zA-Z0-9]/g, '').slice(-16);
+  const cleanUserId = (currentUser?.id || '').replace(/[^a-zA-Z0-9]/g, '').slice(-8);
+  const myPeerId = cleanUserId ? `sm_g_${cleanServerId}_${cleanUserId}` : '';
+
+  const webrtcHtml = React.useMemo(() => {
+    if (!currentUser?.id) return '';
+    return getGroupWebRtcHtml({
+      serverId: serverId || 'room',
+      myUserId: currentUser.id,
+      myName: currentUser.full_name || 'You',
+      myAvatar: currentUser.avatar_url || undefined,
+      type: (type as any) === 'voice' ? 'voice' : 'video',
+      serverName: server?.name || serverNameParam || 'Ruang Belajar',
+    });
+    // PENTING: Jangan masukkan server?.name ke dependency useMemo agar WebView tidak reload ulang
+    // di tengah inisialisasi mikrofon saat getStudyServerDetail selesai!
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverId, currentUser?.id, type]);
+
+  useEffect(() => {
+    const title = server?.name || serverNameParam;
+    if (title && webViewRef.current) {
+      const safeTitle = JSON.stringify(title);
+      (webViewRef.current as any)?.injectJavaScript(
+        `var el = document.getElementById('roomName'); if (el) el.innerText = ${safeTitle}; true;`
+      );
+    }
+  }, [server?.name, serverNameParam]);
+
+  // Minta izin hardware (mikrofon & kamera) eksplisit di Android saat layar dibuka
+  useEffect(() => {
+    let mounted = true;
+    const requestHardwarePermissions = async () => {
+      if (Platform.OS === 'android') {
+        setPermissionsReady(false);
+        setMicGranted(false);
+        try {
+          const { granted: audioOk } = await requestRecordingPermissionsAsync();
+          if (audioOk && type !== 'voice') {
+            await requestCameraPermissionsAsync();
+          }
+          if (mounted) {
+            setMicGranted(audioOk);
+            if (!audioOk) {
+              Alert.alert(
+                'Izin Mikrofon Diperlukan 🎤',
+                'Aplikasi membutuhkan izin mikrofon agar suara Anda dapat didengar di Google Meet Room.',
+                [{ text: 'OK' }]
+              );
+            }
+          }
+        } catch (err) {
+          console.warn('[ServerFocusScreen] Hardware permission error:', err);
+        } finally {
+          if (mounted) setPermissionsReady(true);
+        }
+      }
+    };
+
+    requestHardwarePermissions();
+    return () => {
+      mounted = false;
+    };
+  }, [type, permissionAttempt]);
 
   useEffect(() => {
     loadData();
@@ -167,33 +236,138 @@ export default function ServerFocusScreen() {
       sendServerMessage(
         serverId,
         user.id,
-        `🍅 ${senderName} telah memulai Sesi Focus Mode (Pomodoro 25m) di "${srv.name}". Ayo gabung belajar!`,
+        `🍅 ${senderName} telah membuka Ruang Google Meet (Focus Mode) di "${srv.name}". Ayo gabung belajar!`,
         senderName
       ).catch(() => {});
     }
   };
 
-  // Realtime Presence: Melacak siapa saja anggota yang BENAR-BENAR membuka / gabung sesi
-  useEffect(() => {
-    if (!serverId || !currentUser?.id) return;
+  // Sinkronisasi seluruh partisipan (Presence, Broadcast, & Anggota Server) ke WebView agar langsung tampil dalam 1 frame
+  const syncParticipantsToWebView = useCallback(() => {
+    if (!webViewRef.current || !currentUser?.id) return;
 
-    const channel = supabase.channel(`focus_presence_${serverId}`, {
+    const remoteBuddies = activeParticipants
+      .filter((p) => p.user_id !== currentUser.id)
+      .map((p) => {
+        const remoteUserIdClean = p.user_id.replace(/[^a-zA-Z0-9]/g, '').slice(-8);
+        const targetPeerId = (p as any).peer_id || `sm_g_${cleanServerId}_${remoteUserIdClean}`;
+        const targetName = p.full_name || p.username || 'Teman Belajar';
+        const targetAvatar = p.avatar_url || '';
+        return {
+          peerId: targetPeerId,
+          name: targetName,
+          avatar: targetAvatar,
+          timeLeft: p.time_left,
+          isRunning: p.is_running,
+          mode: p.mode,
+        };
+      });
+
+    const serverMembersPayload = members
+      .filter((m) => m.user_id && m.user_id !== currentUser.id)
+      .map((m) => {
+        const memberUserIdClean = m.user_id.replace(/[^a-zA-Z0-9]/g, '').slice(-8);
+        return {
+          peerId: `sm_g_${cleanServerId}_${memberUserIdClean}`,
+          name: m.profile?.full_name || m.profile?.username || 'Teman Belajar',
+          avatar: m.profile?.avatar_url || '',
+        };
+      });
+
+    const presenceJson = JSON.stringify(remoteBuddies);
+    const membersJson = JSON.stringify(serverMembersPayload);
+    const script = `
+      if (typeof window.syncServerMembers === 'function') {
+        window.syncServerMembers(${membersJson});
+      }
+      if (typeof window.syncPresencePeers === 'function') {
+        window.syncPresencePeers(${presenceJson});
+      }
+      true;
+    `;
+    (webViewRef.current as any)?.injectJavaScript(script);
+  }, [activeParticipants, members, currentUser?.id, cleanServerId]);
+
+  // Sinkronisasi otomatis saat daftar partisipan atau anggota server berubah
+  useEffect(() => {
+    syncParticipantsToWebView();
+  }, [activeParticipants, members, syncParticipantsToWebView]);
+
+  // Re-sync berkala agar koneksi peer WebRTC dan kartu partisipan selalu terjaga dalam 1 frame
+  useEffect(() => {
+    if (!permissionsReady || !micGranted) return;
+    const interval = setInterval(() => {
+      syncParticipantsToWebView();
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [permissionsReady, micGranted, syncParticipantsToWebView]);
+
+  // Helper untuk mengirim pengumuman kehadiran via Broadcast
+  const sendMyPeerAnnounce = useCallback(() => {
+    if (!channelRef.current || !currentUser?.id || !myPeerId) return;
+    try {
+      channelRef.current.send({
+        type: 'broadcast',
+        event: 'peer_announce',
+        payload: {
+          user_id: currentUser.id,
+          peer_id: myPeerId,
+          full_name: currentUser.full_name || 'Anggota',
+          username: currentUser.username || null,
+          avatar_url: currentUser.avatar_url || null,
+          is_running: isRunning,
+          time_left: timeLeft,
+          mode: mode,
+        },
+      });
+    } catch {}
+  }, [currentUser?.id, currentUser?.full_name, currentUser?.username, currentUser?.avatar_url, myPeerId, isRunning, timeLeft, mode]);
+
+  // Realtime Presence + Broadcast Heartbeat: Melacak siapa saja anggota yang membuka / gabung sesi
+  useEffect(() => {
+    if (!serverId || !currentUser?.id || !myPeerId) return;
+
+    const topicName = `focus_presence_${cleanServerId}`;
+    const existing = supabase.getChannels().find(
+      (c) => c.topic === topicName || c.topic === `realtime:${topicName}`
+    );
+    if (existing) {
+      supabase.removeChannel(existing);
+    }
+
+    const channel = supabase.channel(topicName, {
       config: {
         presence: {
           key: currentUser.id,
         },
       },
     });
+    channelRef.current = channel;
 
-    channel
-      .on('presence', { event: 'sync' }, () => {
-        const state = channel.presenceState();
-        const activeList: ActiveFocusParticipant[] = [];
-        const seen = new Set<string>();
+    const mergePresenceState = () => {
+      const state = channel.presenceState();
+      const fromPresence: (ActiveFocusParticipant & { peer_id?: string })[] = [];
 
+      for (const key of Object.keys(state)) {
+        const presences = state[key] as any[];
+        if (presences && presences.length > 0) {
+          const p = presences[0] as ActiveFocusParticipant & { peer_id?: string };
+          if (p?.user_id && p.user_id !== currentUser.id) {
+            fromPresence.push(p);
+          }
+        }
+      }
+
+      setActiveParticipants((prev) => {
+        const map = new Map<string, ActiveFocusParticipant & { peer_id?: string }>();
+        // Pertahankan partisipan yang ditambahkan via simulasi testing
+        prev.forEach((item) => {
+          if (item.is_simulated) {
+            map.set(item.user_id, item);
+          }
+        });
         // Pastikan diri sendiri selalu ada
-        seen.add(currentUser.id);
-        activeList.push({
+        map.set(currentUser.id, {
           user_id: currentUser.id,
           full_name: currentUser.full_name || 'You',
           username: currentUser.username || null,
@@ -203,50 +377,111 @@ export default function ServerFocusScreen() {
           mode: mode,
           joined_at: new Date().toISOString(),
         });
+        // Gabungkan dari presence
+        fromPresence.forEach((p) => {
+          const existingItem = map.get(p.user_id);
+          map.set(p.user_id, { ...(existingItem || {}), ...p });
+        });
+        return Array.from(map.values());
+      });
+    };
 
-        for (const key of Object.keys(state)) {
-          const presences = state[key] as any[];
-          if (presences && presences.length > 0) {
-            const p = presences[0] as ActiveFocusParticipant;
-            if (p?.user_id && !seen.has(p.user_id)) {
-              seen.add(p.user_id);
-              activeList.push(p);
+    channel
+      .on('presence', { event: 'sync' }, mergePresenceState)
+      .on('presence', { event: 'join' }, () => {
+        mergePresenceState();
+        sendMyPeerAnnounce();
+      })
+      .on('presence', { event: 'leave' }, ({ leftPresences }: any) => {
+        if (Array.isArray(leftPresences)) {
+          const leftUserIds = new Set<string>();
+          leftPresences.forEach((lp: any) => {
+            if (lp?.user_id && lp.user_id !== currentUser.id) {
+              leftUserIds.add(lp.user_id);
+              const remoteUserIdClean = lp.user_id.replace(/[^a-zA-Z0-9]/g, '').slice(-8);
+              const targetPeerId = lp.peer_id || `sm_g_${cleanServerId}_${remoteUserIdClean}`;
+              (webViewRef.current as any)?.injectJavaScript(
+                `if (typeof window.disconnectPeer === 'function') { window.disconnectPeer('${targetPeerId}'); } true;`
+              );
             }
+          });
+          if (leftUserIds.size > 0) {
+            setActiveParticipants((prev) =>
+              prev.filter((p) => p.is_simulated || !leftUserIds.has(p.user_id))
+            );
           }
         }
-
-        // Pertahankan simulated buddy jika sedang diaktifkan untuk pengujian
+      })
+      .on('broadcast', { event: 'peer_announce' }, ({ payload }) => {
+        if (!payload?.user_id || payload.user_id === currentUser.id) return;
         setActiveParticipants((prev) => {
-          const simulated = prev.filter((p) => p.is_simulated && !seen.has(p.user_id));
-          return [...activeList, ...simulated];
+          const exists = prev.some((p) => p.user_id === payload.user_id);
+          if (exists) {
+            return prev.map((p) => (p.user_id === payload.user_id ? { ...p, ...payload } : p));
+          }
+          return [...prev, payload];
         });
+      })
+      .on('broadcast', { event: 'peer_leave' }, ({ payload }) => {
+        if (!payload?.user_id || payload.user_id === currentUser.id) return;
+        const remoteUserIdClean = payload.user_id.replace(/[^a-zA-Z0-9]/g, '').slice(-8);
+        const targetPeerId = payload.peer_id || `sm_g_${cleanServerId}_${remoteUserIdClean}`;
+        (webViewRef.current as any)?.injectJavaScript(
+          `if (typeof window.disconnectPeer === 'function') { window.disconnectPeer('${targetPeerId}'); } true;`
+        );
+        setActiveParticipants((prev) =>
+          prev.filter((p) => p.is_simulated || p.user_id !== payload.user_id)
+        );
       })
       .on('broadcast', { event: 'timer_update' }, ({ payload }) => {
         if (!payload?.user_id || payload.user_id === currentUser.id) return;
-        setActiveParticipants((prev) =>
-          prev.map((p) => (p.user_id === payload.user_id ? { ...p, ...payload } : p))
-        );
+        setActiveParticipants((prev) => {
+          const exists = prev.some((p) => p.user_id === payload.user_id);
+          if (exists) {
+            return prev.map((p) => (p.user_id === payload.user_id ? { ...p, ...payload } : p));
+          }
+          return [...prev, payload];
+        });
       })
       .subscribe(async (status) => {
         if (status === 'SUBSCRIBED') {
-          await channel.track({
-            user_id: currentUser.id,
-            full_name: currentUser.full_name || 'Anggota',
-            username: currentUser.username || null,
-            avatar_url: currentUser.avatar_url || null,
-            is_running: isRunning,
-            time_left: timeLeft,
-            mode: mode,
-            joined_at: new Date().toISOString(),
-          });
+          try {
+            await channel.track({
+              user_id: currentUser.id,
+              peer_id: myPeerId,
+              full_name: currentUser.full_name || 'Anggota',
+              username: currentUser.username || null,
+              avatar_url: currentUser.avatar_url || null,
+              is_running: isRunning,
+              time_left: timeLeft,
+              mode: mode,
+              joined_at: new Date().toISOString(),
+            });
+          } catch {}
+          sendMyPeerAnnounce();
         }
       });
 
+    const announceTimer = setInterval(() => {
+      sendMyPeerAnnounce();
+    }, 3000);
+
     return () => {
+      clearInterval(announceTimer);
+      try {
+        channel.send({
+          type: 'broadcast',
+          event: 'peer_leave',
+          payload: { user_id: currentUser.id, peer_id: myPeerId },
+        });
+      } catch {}
       channel.untrack().catch(() => {});
       supabase.removeChannel(channel);
+      if (channelRef.current === channel) {
+        channelRef.current = null;
+      }
     };
-  }, [serverId, currentUser?.id]);
+  }, [serverId, currentUser?.id, myPeerId, cleanServerId]);
 
   // Pomodoro Interval Timer untuk User ini
   useEffect(() => {
@@ -348,6 +583,10 @@ export default function ServerFocusScreen() {
     else newSec = 15 * 60;
     setTimeLeft(newSec);
 
+    (webViewRef.current as any)?.injectJavaScript(
+      `if (typeof window.setPomodoroMode === "function") { window.setPomodoroMode('${newMode}', ${newSec}); } true;`
+    );
+
     if (currentUser?.id) {
       setActiveParticipants((prev) =>
         prev.map((p) =>
@@ -358,12 +597,14 @@ export default function ServerFocusScreen() {
       );
 
       try {
-        const channel = supabase.channel(`focus_presence_${serverId}`);
-        channel.send({
+        channelRef.current?.send({
           type: 'broadcast',
           event: 'timer_update',
           payload: {
             user_id: currentUser.id,
+            peer_id: myPeerId,
+            full_name: currentUser.full_name || 'Anggota',
+            avatar_url: currentUser.avatar_url || null,
             is_running: false,
             time_left: newSec,
             mode: newMode,
@@ -387,12 +628,14 @@ export default function ServerFocusScreen() {
       );
 
       try {
-        const channel = supabase.channel(`focus_presence_${serverId}`);
-        channel.send({
+        channelRef.current?.send({
           type: 'broadcast',
           event: 'timer_update',
           payload: {
             user_id: currentUser.id,
+            peer_id: myPeerId,
+            full_name: currentUser.full_name || 'Anggota',
+            avatar_url: currentUser.avatar_url || null,
             is_running: nextRunning,
             time_left: timeLeft,
             mode: mode,
@@ -442,21 +685,67 @@ export default function ServerFocusScreen() {
   // Jumlah partisipan yang benar-benar sedang belajar di sesi ini
   const membersStudyingCount = 1 + otherActiveParticipants.length;
 
-  // Panggil anggota grup agar masuk sesi
+  // Panggil anggota grup agar masuk sesi (mengirim ringing call modal & push notification)
   const handleNotifyMember = async (member: ServerMember) => {
     if (!serverId || !currentUser?.id) return;
     const name = member.profile?.full_name || `@${member.profile?.username}` || 'Teman';
     const myName = currentUser.full_name || 'Teman Belajar';
+    const sName = server?.name || serverNameParam || 'Ruang Belajar';
     try {
+      await initiateCallSession({
+        conversationId: serverId,
+        callerId: currentUser.id,
+        callerName: myName,
+        callerAvatar: currentUser.avatar_url || undefined,
+        receiverId: member.user_id,
+        room: `StudyServer_${cleanServerId}`,
+        type: (type as any) === 'voice' ? 'voice' : 'video',
+        status: 'calling',
+        is_group_meet: true,
+        server_id: serverId,
+        server_name: sName,
+      });
+
       await sendServerMessage(
         serverId,
         currentUser.id,
         `🍅 Halo @${name}, ${myName} sedang belajar di Sesi Pomodoro (${taskName}). Ayo gabung belajar bareng!`,
         myName
       );
-      Alert.alert('Ajakan Terkirim! 🔔', `Panggilan untuk ${name} telah dikirim ke obrolan grup.`);
+      Alert.alert('Panggilan Terkirim! 🔔', `Panggilan dan notifikasi dering telah dikirim ke HP ${name}.`);
     } catch {
-      Alert.alert('Gagal', 'Tidak dapat mengirim ajakan.');
+      Alert.alert('Gagal', 'Tidak dapat mengirim panggilan.');
+    }
+  };
+
+  // Panggil semua anggota grup sekaligus
+  const handleNotifyAllMembers = async () => {
+    if (!serverId || !currentUser?.id || otherGroupMembers.length === 0) return;
+    const myName = currentUser.full_name || 'Teman Belajar';
+    const sName = server?.name || serverNameParam || 'Ruang Belajar';
+    try {
+      await sendGroupMeetInvite({
+        serverId,
+        serverName: sName,
+        callerId: currentUser.id,
+        callerName: myName,
+        callerAvatar: currentUser.avatar_url || undefined,
+        receiverUserIds: otherGroupMembers.map((m) => m.user_id),
+        type: (type as any) === 'voice' ? 'voice' : 'video',
+      });
+
+      await sendServerMessage(
+        serverId,
+        currentUser.id,
+        `📢 @all ${myName} mengundang seluruh anggota grup belajar ke Google Meet Room (${taskName}). Ayo gabung!`,
+        myName
+      );
+      Alert.alert(
+        'Panggilan Terkirim ke Semua Anggota! 🔔',
+        `Panggilan dan dering telah dikirim ke ${otherGroupMembers.length} anggota grup.`
+      );
+    } catch {
+      Alert.alert('Gagal', 'Tidak dapat memanggil semua anggota.');
     }
   };
 
@@ -526,9 +815,25 @@ export default function ServerFocusScreen() {
     }
   };
 
+  const handleExit = () => {
+    try {
+      channelRef.current?.send({
+        type: 'broadcast',
+        event: 'peer_leave',
+        payload: { user_id: currentUser?.id, peer_id: myPeerId },
+      });
+    } catch {}
+    if (router.canGoBack()) {
+      router.back();
+    } else if (serverId) {
+      router.replace(`/server-chat/${serverId}`);
+    } else {
+      router.replace('/(tabs)/chat');
+    }
+  };
+
   return (
     <View style={styles.container}>
-      {/* Background Pastel Dreamy Ethereal Glow persis sesuai Gambar Referensi */}
       <LinearGradient
         colors={['#c4b5fd', '#f472b6', '#7dd3fc', '#86efac']}
         start={{ x: 0, y: 0 }}
@@ -537,214 +842,118 @@ export default function ServerFocusScreen() {
       />
       <StatusBar style="dark" />
 
-      {/* WebRTC Video Call Engine di Background */}
-      <View style={styles.hiddenWebview}>
+      {permissionsReady && micGranted && !!currentUser?.id && !!webrtcHtml ? (
         <WebView
-          source={{ uri: callUrl }}
+          key={myPeerId}
+          ref={webViewRef as any}
+          source={{
+            html: webrtcHtml,
+            baseUrl: 'https://studymatch.app',
+          }}
           javaScriptEnabled
           domStorageEnabled
           allowsInlineMediaPlayback
           mediaPlaybackRequiresUserAction={false}
           mediaCapturePermissionGrantType="grant"
+          allowFileAccess={true}
+          allowFileAccessFromFileURLs={true}
+          allowUniversalAccessFromFileURLs={true}
+          mixedContentMode="always"
+          allowsFullscreenVideo
+          originWhitelist={['*']}
+          style={styles.webview}
+          onLoadEnd={() => {
+            (webViewRef.current as any)?.injectJavaScript(
+              'if (typeof unlockAudio === "function") { unlockAudio(); } true;'
+            );
+            if (autostart === '1' || autostart === 'true') {
+              (webViewRef.current as any)?.injectJavaScript(
+                'setTimeout(() => { if (typeof togglePomodoro === "function") { togglePomodoro(); } }, 1500); true;'
+              );
+            }
+            syncParticipantsToWebView();
+            sendMyPeerAnnounce();
+          }}
+          onMessage={(event: any) => {
+            try {
+              const data = JSON.parse(event.nativeEvent.data);
+              if (data.type === 'LEAVE_MEET') {
+                handleExit();
+              } else if (data.type === 'WEBVIEW_LOG') {
+                console.log(`[GroupWebView:${data.level}]`, data.message);
+              } else if (data.type === 'PEER_OPEN') {
+                syncParticipantsToWebView();
+                sendMyPeerAnnounce();
+              } else if (data.type === 'CONNECTED') {
+                (webViewRef.current as any)?.injectJavaScript(
+                  'if (typeof window.unlockAudio === "function") { window.unlockAudio(); } true;'
+                );
+              } else if (data.type === 'OPEN_SETTINGS') {
+                setShowSettingsModal(true);
+              } else if (data.type === 'OPEN_INVITE') {
+                setShowInviteModal(true);
+              } else if (data.type === 'POMO_STATE') {
+                setIsRunning(data.isRunning);
+                setTimeLeft(data.timeLeft);
+                if (currentUser?.id) {
+                  try {
+                    channelRef.current?.send({
+                      type: 'broadcast',
+                      event: 'timer_update',
+                      payload: {
+                        user_id: currentUser.id,
+                        peer_id: myPeerId,
+                        full_name: currentUser.full_name || 'Anggota',
+                        avatar_url: currentUser.avatar_url || null,
+                        is_running: data.isRunning,
+                        time_left: data.timeLeft,
+                        mode: mode,
+                      },
+                    });
+                  } catch {}
+                }
+              } else if (data.type === 'POMO_COMPLETE') {
+                handleTimerComplete();
+              } else if (data.type === 'MIC_TOGGLED') {
+                setIsMicMuted(data.muted);
+              } else if (data.type === 'CAM_TOGGLED') {
+                setIsCameraOff(data.camOff);
+              } else if (data.type === 'ERROR') {
+                Alert.alert('Perhatian', data.message || 'Kendala sambungan audio/video.');
+              }
+            } catch {}
+          }}
         />
-      </View>
-
-      {/* Main Single-Screen Wrapper (Terstruktur & Proporsional Sempurna) */}
-      <View
-        style={[
-          styles.mainWrapper,
-          {
-            paddingTop: insets.top + 4,
-            paddingBottom: Math.max(insets.bottom, 10),
-          },
-        ]}
-      >
-        {/* ==================== 1. TOP HEADER ==================== */}
-        <View style={styles.topNavRow}>
-          {/* Tombol Back Cyan Bulat */}
-          <TouchableOpacity
-            style={styles.cyanBackBtn}
-            onPress={() => router.back()}
-            activeOpacity={0.75}
-          >
-            <Text style={styles.cyanBackArrow}>←</Text>
-          </TouchableOpacity>
-
-          {/* Judul: Focus Mode & N Members Studying */}
-          <View style={styles.titleWrap}>
-            <Text style={styles.focusModeTitle}>
-              <Text style={styles.focusWord}>Focus </Text>
-              <Text style={styles.modeWord}>Mode</Text>
-            </Text>
-            <Text style={styles.membersStudyingSubtitle}>
-              {membersStudyingCount} Members Studying
-            </Text>
-          </View>
-
-          {/* Tombol Pengaturan Pomodoro & Tugas */}
-          <TouchableOpacity
-            style={styles.settingsBtn}
-            onPress={() => setShowSettingsModal(true)}
-            activeOpacity={0.75}
-          >
-            <Text style={styles.settingsBtnText}>⚙️</Text>
-          </TouchableOpacity>
+      ) : !permissionsReady || !currentUser?.id ? (
+        <View style={styles.centerLoading}>
+          <ActivityIndicator size="large" color="#2563eb" />
+          <Text style={styles.loadingText}>Menyiapkan ruang belajar & kamera...</Text>
         </View>
-
-        {/* ==================== 2. SESSION CAPSULE & SERVER NAME ==================== */}
-        <View style={styles.sessionHeaderSection}>
-          <TouchableOpacity
-            style={styles.frostedCapsule}
-            onPress={() => setShowSettingsModal(true)}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.capsuleTitle}>
-              {mode === 'study' ? (
-                <>
-                  <Text style={styles.capsuleOrange}>Study </Text>
-                  <Text style={styles.capsuleGreen}>Session</Text>
-                </>
-              ) : mode === 'short_break' ? (
-                <>
-                  <Text style={styles.capsuleGreen}>Short </Text>
-                  <Text style={styles.capsuleOrange}>Break</Text>
-                </>
-              ) : (
-                <>
-                  <Text style={styles.capsuleGreen}>Long </Text>
-                  <Text style={styles.capsuleOrange}>Break</Text>
-                </>
-              )}
-            </Text>
-          </TouchableOpacity>
-
-          {/* Nama Server / Grup (e.g. Math Study Club) */}
-          <Text style={styles.serverNameHeading} numberOfLines={1}>
-            {server?.name || serverNameParam || 'Math Study Club'}
+      ) : (
+        <View style={styles.centerLoading}>
+          <Text style={styles.permissionTitle}>Izin Mikrofon Dibutuhkan 🎤</Text>
+          <Text style={styles.permissionSubtitle}>
+            Aplikasi memerlukan izin mikrofon agar suaramu dapat didengar saat berbicara.
           </Text>
-        </View>
-
-        {/* ==================== 3. KOTAK TIMER (PERSIS GAMBAR REFERENSI) ==================== */}
-        {/* Kotak minimalis bersih: hanya berisi angka 25 : 00 dan tombol pil Start di bawahnya */}
-        <View style={styles.timerCard}>
-          <Text style={styles.timerNumbers}>{timeFormatted}</Text>
-
           <TouchableOpacity
-            style={[styles.glassPillButton, isRunning && styles.glassPillButtonActive]}
-            onPress={toggleStartPause}
+            style={styles.permissionRetryBtn}
+            onPress={() => setPermissionAttempt((prev) => prev + 1)}
             activeOpacity={0.8}
           >
-            <Text
-              style={[
-                styles.glassPillButtonText,
-                isRunning && styles.glassPillButtonTextActive,
-              ]}
-            >
-              {isRunning ? 'Pause' : 'Start'}
-            </Text>
+            <Text style={styles.permissionRetryText}>Coba lagi</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.permissionSettingsBtn}
+            onPress={() => Linking.openSettings()}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.permissionSettingsText}>Buka pengaturan</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.endBtn} onPress={handleExit} activeOpacity={0.85}>
+            <Text style={styles.endIcon}>📞</Text>
           </TouchableOpacity>
         </View>
-
-        {/* ==================== 4. 2x2 KOTAK ORANG / PARTISIPAN (PERSIS GAMBAR REFERENSI) ==================== */}
-        {/* Persegi panjang vertikal tinggi & elegan, ikon kamera putih solid di tengah, nama tebal di bawah */}
-        <View style={styles.gridContainer}>
-          {/* Row 1: Slot 1 (Kiri Atas) & Slot 2 (Kanan Atas) */}
-          <View style={styles.gridRow}>
-            <ParticipantCard
-              name={slot1 ? (slot1.full_name || `@${slot1.username}` || 'Partner 1') : '+ Undang Teman'}
-              isSelf={false}
-              isEmpty={!slot1}
-              statusBadge={
-                slot1
-                  ? `${slot1.is_running ? '🍅' : '⏸️'} ${formatSeconds(slot1.time_left ?? 25 * 60)}`
-                  : undefined
-              }
-              avatarUrl={slot1?.avatar_url}
-              onPress={!slot1 ? () => setShowInviteModal(true) : undefined}
-            />
-            <ParticipantCard
-              name={slot2 ? (slot2.full_name || `@${slot2.username}` || 'Partner 2') : 'Menunggu Teman'}
-              isSelf={false}
-              isEmpty={!slot2}
-              statusBadge={
-                slot2
-                  ? `${slot2.is_running ? '🍅' : '⏸️'} ${formatSeconds(slot2.time_left ?? 25 * 60)}`
-                  : undefined
-              }
-              avatarUrl={slot2?.avatar_url}
-              onPress={!slot2 ? () => setShowInviteModal(true) : undefined}
-            />
-          </View>
-
-          {/* Row 2: Slot 3 (Kiri Bawah) & Slot 4 (Kanan Bawah - You) */}
-          <View style={styles.gridRow}>
-            <ParticipantCard
-              name={slot3 ? (slot3.full_name || `@${slot3.username}` || 'Partner 3') : 'Menunggu Teman'}
-              isSelf={false}
-              isEmpty={!slot3}
-              statusBadge={
-                slot3
-                  ? `${slot3.is_running ? '🍅' : '⏸️'} ${formatSeconds(slot3.time_left ?? 25 * 60)}`
-                  : undefined
-              }
-              avatarUrl={slot3?.avatar_url}
-              onPress={!slot3 ? () => setShowInviteModal(true) : undefined}
-            />
-            <ParticipantCard
-              name="You"
-              isSelf={true}
-              isEmpty={false}
-              statusBadge={`${isRunning ? '🍅' : '⏸️'} ${timeFormatted}`}
-              isCameraOff={isCameraOff}
-              isMicMuted={isMicMuted}
-              avatarUrl={currentUser?.avatar_url}
-            />
-          </View>
-        </View>
-
-        {/* ==================== 5. FLOATING BOTTOM CONTROLS DOCK ==================== */}
-        <View style={styles.bottomDock}>
-          {/* Mute Mic */}
-          <TouchableOpacity
-            style={[styles.dockBtn, isMicMuted && styles.dockBtnMuted]}
-            onPress={() => setIsMicMuted(!isMicMuted)}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.dockBtnIcon}>{isMicMuted ? '🔇' : '🎙️'}</Text>
-            <Text style={styles.dockBtnLabel}>{isMicMuted ? 'Unmute' : 'Mute'}</Text>
-          </TouchableOpacity>
-
-          {/* Toggle Video */}
-          <TouchableOpacity
-            style={[styles.dockBtn, isCameraOff && styles.dockBtnMuted]}
-            onPress={() => setIsCameraOff(!isCameraOff)}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.dockBtnIcon}>{isCameraOff ? '🚫' : '📹'}</Text>
-            <Text style={styles.dockBtnLabel}>{isCameraOff ? 'Cam Off' : 'Cam On'}</Text>
-          </TouchableOpacity>
-
-          {/* Reset Pomodoro */}
-          <TouchableOpacity
-            style={styles.dockBtn}
-            onPress={resetTimer}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.dockBtnIcon}>🔄</Text>
-            <Text style={styles.dockBtnLabel}>Reset</Text>
-          </TouchableOpacity>
-
-          {/* Keluar dari Sesi */}
-          <TouchableOpacity
-            style={[styles.dockBtn, styles.dockBtnLeave]}
-            onPress={() => router.back()}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.dockBtnIcon}>📞</Text>
-            <Text style={[styles.dockBtnLabel, { color: '#ef4444' }]}>Keluar</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
+      )}
 
       {/* ==================== MODAL PENGATURAN POMODORO & TUGAS ==================== */}
       <Modal visible={showSettingsModal} transparent animationType="fade">
@@ -854,6 +1063,20 @@ export default function ServerFocusScreen() {
                 <Text style={styles.inviteSectionSubtitle}>
                   Panggil anggota grup untuk bergabung ke sesi Pomodoro Anda:
                 </Text>
+
+                {otherGroupMembers.length > 0 && (
+                  <View style={styles.inviteAllRow}>
+                    <TouchableOpacity
+                      style={styles.notifyAllMembersBtn}
+                      onPress={handleNotifyAllMembers}
+                      activeOpacity={0.85}
+                    >
+                      <Text style={styles.notifyAllMembersBtnText}>
+                        🔔 Panggil Semua Anggota ({otherGroupMembers.length})
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
 
                 {otherGroupMembers.length === 0 ? (
                   <Text style={styles.emptyText}>Belum ada anggota lain di grup ini.</Text>
@@ -1064,6 +1287,100 @@ const CARD_HEIGHT = Math.min(210, Math.max(165, Math.round(CARD_WIDTH * 1.25)));
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: '#c4b5fd',
+  },
+  webviewWrapper: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+    backgroundColor: 'transparent',
+  },
+  webview: {
+    flex: 1,
+    backgroundColor: 'transparent',
+  },
+  centerLoading: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 32,
+    backgroundColor: 'transparent',
+  },
+  loadingText: {
+    marginTop: 14,
+    color: '#0f172a',
+    fontSize: 14,
+    fontFamily: Fonts.bold,
+    textAlign: 'center',
+  },
+  permissionTitle: {
+    fontSize: 20,
+    fontFamily: Fonts.bold,
+    fontWeight: '700',
+    color: '#0f172a',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  permissionSubtitle: {
+    fontSize: 14,
+    fontFamily: Fonts.medium,
+    color: '#334155',
+    textAlign: 'center',
+    marginBottom: 24,
+    lineHeight: 20,
+  },
+  permissionRetryBtn: {
+    backgroundColor: '#2563eb',
+    paddingVertical: 12,
+    paddingHorizontal: 28,
+    borderRadius: 24,
+    marginBottom: 12,
+    shadowColor: '#2563eb',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  permissionRetryText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  permissionSettingsBtn: {
+    backgroundColor: 'rgba(255, 255, 255, 0.85)',
+    borderWidth: 1.5,
+    borderColor: '#ffffff',
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 24,
+    marginBottom: 24,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  permissionSettingsText: {
+    color: '#1e293b',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  endBtn: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#ef4444',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#ef4444',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  endIcon: {
+    fontSize: 26,
+    transform: [{ rotate: '135deg' }],
   },
   mainWrapper: {
     flex: 1,
@@ -1673,5 +1990,26 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.bold,
     fontSize: 11,
     color: '#166534',
+  },
+  inviteAllRow: {
+    marginBottom: 12,
+  },
+  notifyAllMembersBtn: {
+    backgroundColor: '#2563eb',
+    borderRadius: BorderRadius.md,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#2563eb',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  notifyAllMembersBtnText: {
+    fontFamily: Fonts.bold,
+    fontSize: 12.5,
+    color: '#ffffff',
   },
 });
