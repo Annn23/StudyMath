@@ -43,6 +43,18 @@ export default async function LoginPage({
           </div>
         )}
 
+        {error === 'server_config' && (
+          <div style={{
+            background: 'rgba(245,158,11,0.1)', border: '1.5px solid rgba(245,158,11,0.4)',
+            borderRadius: 12, padding: '12px 16px', marginBottom: 24,
+          }}>
+            <p style={{ fontSize: 13, color: '#b45309', fontWeight: 500, margin: 0 }}>
+              Server belum terhubung ke Supabase. Pastikan Environment Variables
+              (NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY) sudah diisi di Vercel lalu Redeploy.
+            </p>
+          </div>
+        )}
+
         <form action="/api/auth/login" method="POST">
           <div style={{ marginBottom: 20 }}>
             <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#1a1a2e', marginBottom: 8 }}>
